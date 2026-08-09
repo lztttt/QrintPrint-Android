@@ -1,6 +1,5 @@
 package com.qring.print.model
 
-import com.qring.print.protocol.parseStatus
 import com.qring.print.protocol.applyQringStatus
 
 /**

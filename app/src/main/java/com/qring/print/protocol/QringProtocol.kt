@@ -111,6 +111,25 @@ fun isStatusHealthy(status: QringStatus): Boolean = status.raw == 0
  * 上盖打开时纸传感器看不到纸，会同时把缺纸位也置起来 ——
  * 这时候提示「缺纸」是误导，真正要用户做的动作是合上盖子。
  */
+/** 把 QringStatus 应用到 PrinterStatus 上 */
+fun applyQringStatus(ps: com.qring.print.model.PrinterStatus, qs: QringStatus): com.qring.print.model.PrinterStatus {
+    val paperState = when {
+        qs.noPaper -> com.qring.print.model.PaperState.NO_PAPER
+        else -> com.qring.print.model.PaperState.OK
+    }
+    val hardwareState = when {
+        qs.coverOpen -> com.qring.print.model.HardwareState.COVER_OPEN
+        qs.overheat -> com.qring.print.model.HardwareState.OVERHEAT
+        qs.lowBattery -> com.qring.print.model.HardwareState.NORMAL  // 低电量不影响硬件状态
+        else -> com.qring.print.model.HardwareState.NORMAL
+    }
+    return ps.copy(
+        paperState = paperState,
+        hardwareState = hardwareState,
+        printing = qs.printing
+    )
+}
+
 fun faultMessage(status: QringStatus): String? = when {
     status.coverOpen -> "机器未合盖，请检查机器"
     status.noPaper -> "机器缺纸，请检查纸张装配"
