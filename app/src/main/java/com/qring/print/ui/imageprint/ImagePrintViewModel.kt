@@ -7,7 +7,9 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.qring.print.bt.PrinterConnection
+import com.qring.print.data.HistoryRepository
 import com.qring.print.model.ConnState
+import com.qring.print.model.HIST_TYPE_IMAGE
 import com.qring.print.model.PrinterStatus
 import com.qring.print.model.PrinterStatusRepository
 import com.qring.print.protocol.DITHER_OPTIONS
@@ -46,6 +48,7 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
 
     private val printerConnection = PrinterConnection.getInstance()
     private val app = application
+    private val historyRepo = HistoryRepository(application)
 
     private val _uiState = MutableStateFlow(ImagePrintUiState())
     val uiState: StateFlow<ImagePrintUiState> = _uiState.asStateFlow()
@@ -173,9 +176,27 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
                     val binary = ditherToBinary(gray, _uiState.value.ditherMode, 128)
                     val raster = packBinaryToRaster(binary, gray.width, gray.height)
 
-                    withContext(Dispatchers.IO) {
+                    // 生成缩略图
+                    val fullBmp = binaryToPreviewBitmap(binary, gray.width, gray.height, false)
+                    val thumbBmp = Bitmap.createScaledBitmap(fullBmp, 200, Math.round(200f * fullBmp.height / fullBmp.width), true)
+
+                    val printResult = withContext(Dispatchers.IO) {
                         printerConnection.printRaster(raster, _uiState.value.thickness)
                     }
+
+                    // 打印成功后保存历史
+                    if (printResult.ok) {
+                        try {
+                            val payload = org.json.JSONObject().apply {
+                                put("imageUri", _uiState.value.imageUri)
+                                put("ditherMode", _uiState.value.ditherMode.code)
+                            }.toString()
+                            historyRepo.saveHistory(HIST_TYPE_IMAGE, thumbBmp, payload)
+                        } catch (e: Exception) { }
+                    }
+
+                    fullBmp.recycle()
+                    printResult
                 }
 
                 _uiState.value = _uiState.value.copy(

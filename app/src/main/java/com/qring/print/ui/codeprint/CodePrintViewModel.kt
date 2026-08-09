@@ -8,9 +8,11 @@ import androidx.lifecycle.viewModelScope
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
-import com.google.zxing.common.BitMatrix
 import com.qring.print.bt.PrinterConnection
+import com.qring.print.data.HistoryRepository
 import com.qring.print.model.ConnState
+import com.qring.print.model.HIST_TYPE_CODE
+import com.qring.print.model.PrinterStatus
 import com.qring.print.model.PrinterStatus
 import com.qring.print.model.PrinterStatusRepository
 import com.qring.print.protocol.RasterData
@@ -44,6 +46,7 @@ data class CodePrintUiState(
 class CodePrintViewModel(application: Application) : AndroidViewModel(application) {
 
     private val printerConnection = PrinterConnection.getInstance()
+    private val historyRepo = HistoryRepository(application)
 
     private val _uiState = MutableStateFlow(CodePrintUiState())
     val uiState: StateFlow<CodePrintUiState> = _uiState.asStateFlow()
@@ -224,9 +227,27 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                     val binary = ditherToBinary(scaled, DitherMode.NONE, 128)
                     val raster = packBinaryToRaster(binary, scaled.width, scaled.height)
 
-                    withContext(Dispatchers.IO) {
+                    // 生成缩略图
+                    val fullBmp = binaryToPreviewBitmap(binary, scaled.width, scaled.height, false)
+                    val thumbBmp = Bitmap.createScaledBitmap(fullBmp, 200, Math.round(200f * fullBmp.height / fullBmp.width), true)
+
+                    val printResult = withContext(Dispatchers.IO) {
                         printerConnection.printRaster(raster, 1)
                     }
+
+                    // 打印成功后保存历史
+                    if (printResult.ok) {
+                        try {
+                            val payload = org.json.JSONObject().apply {
+                                put("content", state.content)
+                                put("codeTypeIndex", state.codeTypeIndex)
+                            }.toString()
+                            historyRepo.saveHistory(HIST_TYPE_CODE, thumbBmp, payload)
+                        } catch (e: Exception) { }
+                    }
+
+                    fullBmp.recycle()
+                    printResult
                 }
 
                 _uiState.value = _uiState.value.copy(
