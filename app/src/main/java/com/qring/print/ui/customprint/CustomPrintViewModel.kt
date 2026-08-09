@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.qring.print.bt.PrinterConnection
+import com.qring.print.data.HistoryPayloadHolder
 import com.qring.print.data.HistoryRepository
 import com.qring.print.data.TemplateRepository
 import com.qring.print.model.CanvasDoc
@@ -63,6 +64,47 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
     val uiState: StateFlow<CustomPrintUiState> = _uiState.asStateFlow()
 
     val printerStatus: StateFlow<PrinterStatus> = PrinterStatusRepository.state
+
+    init {
+        restoreFromHistoryPayload()
+    }
+
+    private fun restoreFromHistoryPayload() {
+        val (type, payload) = HistoryPayloadHolder.consumePayload() ?: return
+        if (type != HIST_TYPE_CUSTOM) {
+            HistoryPayloadHolder.setPayload(type, payload)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val obj = org.json.JSONObject(payload)
+                val minLength = obj.optInt("minLength", 200)
+                val elementsArr = obj.optJSONArray("elements") ?: return@launch
+
+                _uiState.value.doc.releaseAll()
+                _uiState.value = _uiState.value.copy(doc = CanvasDoc().apply { this.minLength = minLength })
+
+                for (i in 0 until elementsArr.length()) {
+                    val elObj = elementsArr.getJSONObject(i)
+                    val kind = when (elObj.optString("kind", "TEXT")) {
+                        "TEXT" -> ElementKind.TEXT
+                        "IMAGE" -> ElementKind.IMAGE
+                        "CODE" -> ElementKind.CODE
+                        else -> ElementKind.TEXT
+                    }
+                    val el = CanvasElement(kind).apply {
+                        dotX = elObj.optInt("dotX", 0)
+                        dotY = elObj.optInt("dotY", 0)
+                        dotW = elObj.optInt("dotW", 100)
+                        dotH = elObj.optInt("dotH", 100)
+                    }
+                    _uiState.value.doc.add(el)
+                    runRender(el)
+                }
+                updateComposite()
+            } catch (e: Exception) { }
+        }
+    }
 
     // ── 元素插入 ──────────────────────────────────────────────
 

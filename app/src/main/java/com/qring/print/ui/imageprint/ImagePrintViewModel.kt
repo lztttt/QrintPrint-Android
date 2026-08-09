@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.qring.print.bt.PrinterConnection
+import com.qring.print.data.HistoryPayloadHolder
 import com.qring.print.data.HistoryRepository
 import com.qring.print.model.ConnState
 import com.qring.print.model.HIST_TYPE_IMAGE
@@ -54,6 +55,30 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
     val uiState: StateFlow<ImagePrintUiState> = _uiState.asStateFlow()
 
     val printerStatus: StateFlow<PrinterStatus> = PrinterStatusRepository.state
+
+    init {
+        restoreFromHistoryPayload()
+    }
+
+    private fun restoreFromHistoryPayload() {
+        val (type, payload) = HistoryPayloadHolder.consumePayload() ?: return
+        if (type != HIST_TYPE_IMAGE) {
+            HistoryPayloadHolder.setPayload(type, payload)
+            return
+        }
+        try {
+            val obj = JSONObject(payload)
+            val uri = obj.optString("imageUri", "")
+            val ditherCode = obj.optInt("ditherMode", 1)
+            _uiState.value = _uiState.value.copy(
+                imageUri = uri,
+                ditherMode = DitherMode.entries.getOrElse(ditherCode) { DitherMode.FLOYD_STEINBERG }
+            )
+            if (uri.isNotEmpty()) {
+                decodeAndPreview()
+            }
+        } catch (e: Exception) { }
+    }
 
     fun setImageUri(uri: String) {
         _uiState.value = _uiState.value.copy(imageUri = uri)

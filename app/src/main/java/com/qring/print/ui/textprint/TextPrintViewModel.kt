@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.qring.print.bt.PrinterConnection
 import com.qring.print.bt.PrintResult
+import com.qring.print.data.HistoryPayloadHolder
 import com.qring.print.data.HistoryRepository
 import com.qring.print.model.ConnState
 import com.qring.print.model.HIST_TYPE_TEXT
@@ -50,6 +51,34 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
     val uiState: StateFlow<TextPrintUiState> = _uiState.asStateFlow()
 
     val printerStatus: StateFlow<PrinterStatus> = PrinterStatusRepository.state
+
+    init {
+        // 从历史记录重打时恢复参数
+        restoreFromHistoryPayload()
+    }
+
+    private fun restoreFromHistoryPayload() {
+        val (type, payload) = HistoryPayloadHolder.consumePayload() ?: return
+        if (type != HIST_TYPE_TEXT) {
+            // 不是自己的类型，放回
+            HistoryPayloadHolder.setPayload(type, payload)
+            return
+        }
+        try {
+            val obj = JSONObject(payload)
+            _uiState.value = _uiState.value.copy(
+                text = obj.optString("text", ""),
+                fontSize = obj.optDouble("fontSize", 24.0).toFloat(),
+                bold = obj.optBoolean("bold", false),
+                italic = obj.optBoolean("italic", false),
+                underline = obj.optBoolean("underline", false),
+                letterSpacing = obj.optDouble("letterSpacing", 0.0).toFloat(),
+                lineSpacing = obj.optDouble("lineSpacing", 6.0).toFloat(),
+                pageMargin = obj.optDouble("pageMargin", 8.0).toFloat(),
+                fontFamilyIndex = obj.optInt("fontIndex", 0)
+            )
+        } catch (e: Exception) { }
+    }
 
     fun updateText(text: String) {
         _uiState.value = _uiState.value.copy(text = text)

@@ -47,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.qring.print.data.HistoryPayloadHolder
 import com.qring.print.model.HistoryRecord
 import com.qring.print.model.HIST_TYPE_TEXT
 import com.qring.print.model.HIST_TYPE_IMAGE
@@ -145,7 +146,10 @@ fun HistoryScreen(
                 items(records, key = { it.id }) { record ->
                     HistoryCard(
                         record = record,
-                        onClick = { onReopen(record) },
+                        onClick = {
+                        HistoryPayloadHolder.setPayload(record.typeName, record.payload)
+                        onReopen(record)
+                    },
                         onDelete = { viewModel.deleteRecord(record.id) }
                     )
                 }

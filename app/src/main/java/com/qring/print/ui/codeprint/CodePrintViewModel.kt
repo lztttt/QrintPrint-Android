@@ -53,6 +53,30 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
 
     val printerStatus: StateFlow<PrinterStatus> = PrinterStatusRepository.state
 
+    init {
+        restoreFromHistoryPayload()
+    }
+
+    private fun restoreFromHistoryPayload() {
+        val (type, payload) = HistoryPayloadHolder.consumePayload() ?: return
+        if (type != HIST_TYPE_CODE) {
+            HistoryPayloadHolder.setPayload(type, payload)
+            return
+        }
+        try {
+            val obj = JSONObject(payload)
+            val content = obj.optString("content", "")
+            val codeTypeIndex = obj.optInt("codeTypeIndex", 0)
+            _uiState.value = _uiState.value.copy(
+                content = content,
+                codeTypeIndex = codeTypeIndex
+            )
+            if (content.isNotEmpty()) {
+                generateAndPreview()
+            }
+        } catch (e: Exception) { }
+    }
+
     fun updateContent(content: String) {
         _uiState.value = _uiState.value.copy(content = content)
     }
