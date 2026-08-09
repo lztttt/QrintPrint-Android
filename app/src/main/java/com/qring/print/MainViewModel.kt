@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.qring.print.bt.BtDevice
+import com.qring.print.bt.BtPermissionHelper
 import com.qring.print.bt.PrinterConnection
 import com.qring.print.bt.PrinterDiscovery
 import com.qring.print.model.PrinterStatus
@@ -30,6 +31,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
+    private val _bluetoothEnabled = MutableStateFlow(false)
+    val bluetoothEnabled: StateFlow<Boolean> = _bluetoothEnabled.asStateFlow()
+
+    private val _needsPermission = MutableStateFlow(false)
+    val needsPermission: StateFlow<Boolean> = _needsPermission.asStateFlow()
+
     init {
         printerConnection.init(application)
         // 启动自动重连
@@ -42,8 +49,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _pairedDevices.value = discovery.listPairedDevices()
     }
 
+    fun checkBluetoothState() {
+        val context = getApplication<Application>()
+        _bluetoothEnabled.value = BtPermissionHelper.isBluetoothEnabled(context)
+        _needsPermission.value = !BtPermissionHelper.hasBluetoothPermissions(context)
+    }
+
+    fun onPermissionGranted() {
+        _needsPermission.value = false
+        checkBluetoothState()
+    }
+
     fun startScan(onDevicesFound: (List<BtDevice>) -> Unit) {
         if (_isScanning.value) return
+        _bluetoothEnabled.value = BtPermissionHelper.isBluetoothEnabled(getApplication())
+        if (!_bluetoothEnabled.value) return
         val paired = discovery.listPairedDevices()
         _scannedDevices.value = paired
         _isScanning.value = discovery.start(paired) { devices ->

@@ -55,16 +55,23 @@ import com.qring.print.ui.theme.QringPalette
 @Composable
 fun DevicePickerDialog(
     viewModel: MainViewModel,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onRequestPermission: (() -> Unit)? = null,
+    onEnableBluetooth: (() -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState()
     val pairedDevices by viewModel.pairedDevices.collectAsState()
     val scannedDevices by viewModel.scannedDevices.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
+    val bluetoothEnabled by viewModel.bluetoothEnabled.collectAsState()
+    val needsPermission by viewModel.needsPermission.collectAsState()
 
     LaunchedEffect(Unit) {
+        viewModel.checkBluetoothState()
         viewModel.refreshPairedDevices()
-        viewModel.startScan { }
+        if (bluetoothEnabled) {
+            viewModel.startScan { }
+        }
     }
 
     ModalBottomSheet(
@@ -116,6 +123,61 @@ fun DevicePickerDialog(
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            // 蓝牙未开启或权限不足时的提示
+            if (needsPermission) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("需要蓝牙权限", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                        Text(
+                            "请在系统设置中授予蓝牙权限",
+                            fontSize = 12.sp,
+                            color = QringPalette.textSecondary
+                        )
+                        if (onRequestPermission != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onRequestPermission,
+                                colors = ButtonDefaults.buttonColors(containerColor = BRAND),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("去授权")
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            } else if (!bluetoothEnabled) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("蓝牙未开启", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                        Text(
+                            "请在系统设置中打开蓝牙",
+                            fontSize = 12.sp,
+                            color = QringPalette.textSecondary
+                        )
+                        if (onEnableBluetooth != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onEnableBluetooth,
+                                colors = ButtonDefaults.buttonColors(containerColor = BRAND),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("打开蓝牙")
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
 
             // 设备列表
             if (scannedDevices.isEmpty() && !isScanning) {
