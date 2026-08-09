@@ -112,7 +112,7 @@ fun HomeScreen(
                 onTextClick = { navController.navigate(Routes.TEXT_PRINT) },
                 onImageClick = { navController.navigate(Routes.IMAGE_PRINT) },
                 onCodeClick = { navController.navigate(Routes.CODE_PRINT) },
-                onCustomClick = { /* TODO: Phase 4 */ }
+                onCustomClick = { navController.navigate(Routes.CUSTOM_PRINT) }
             )
         }
     }

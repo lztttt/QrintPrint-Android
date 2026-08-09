@@ -32,6 +32,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.qring.print.R
 import com.qring.print.ui.codeprint.CodePrintScreen
+import com.qring.print.ui.customprint.CustomPrintScreen
 import com.qring.print.ui.home.HomeScreen
 import com.qring.print.ui.imageprint.ImagePrintScreen
 import com.qring.print.ui.theme.BRAND
@@ -80,6 +81,9 @@ fun AppNavHost() {
         }
         composable(Routes.CODE_PRINT) {
             CodePrintScreen(navController = navController)
+        }
+        composable(Routes.CUSTOM_PRINT) {
+            CustomPrintScreen(navController = navController)
         }
     }
 }
