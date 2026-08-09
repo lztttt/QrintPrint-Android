@@ -31,7 +31,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.qring.print.R
+import com.qring.print.ui.codeprint.CodePrintScreen
 import com.qring.print.ui.home.HomeScreen
+import com.qring.print.ui.imageprint.ImagePrintScreen
 import com.qring.print.ui.theme.BRAND
 import com.qring.print.ui.theme.QringPalette
 import com.qring.print.ui.textprint.TextPrintScreen
@@ -72,6 +74,12 @@ fun AppNavHost() {
         }
         composable(Routes.TEXT_PRINT) {
             TextPrintScreen(navController = navController)
+        }
+        composable(Routes.IMAGE_PRINT) {
+            ImagePrintScreen(navController = navController)
+        }
+        composable(Routes.CODE_PRINT) {
+            CodePrintScreen(navController = navController)
         }
     }
 }
@@ -115,6 +123,7 @@ fun MainScreen(navController: NavHostController) {
     }
 }
 
+@Composable
 fun PlaceholderScreen(title: String) {
     Column(
         modifier = Modifier.padding(16.dp),

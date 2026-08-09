@@ -110,8 +110,8 @@ fun HomeScreen(
             // 快速打印宫格
             QuickActionGrid(
                 onTextClick = { navController.navigate(Routes.TEXT_PRINT) },
-                onImageClick = { /* TODO: Phase 3 */ },
-                onCodeClick = { /* TODO: Phase 3 */ },
+                onImageClick = { navController.navigate(Routes.IMAGE_PRINT) },
+                onCodeClick = { navController.navigate(Routes.CODE_PRINT) },
                 onCustomClick = { /* TODO: Phase 4 */ }
             )
         }
