@@ -13,6 +13,7 @@ import com.qring.print.model.HIST_TYPE_TEXT
 import com.qring.print.model.PrinterStatus
 import com.qring.print.model.PrinterStatusRepository
 import com.qring.print.protocol.TextRenderOptions
+import com.qring.print.ui.common.FontList
 import com.qring.print.protocol.bitmapToRaster
 import com.qring.print.protocol.renderTextToPixelMap
 import kotlinx.coroutines.Dispatchers
@@ -110,6 +111,11 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun updatePageMargin(margin: Float) {
         _uiState.value = _uiState.value.copy(pageMargin = margin)
+    }
+
+    fun loadFonts() {
+        val fonts = FontList.getSystemFonts(getApplication())
+        _uiState.value = _uiState.value.copy(fontFamilies = fonts)
     }
 
     private fun currentFamily(): String {

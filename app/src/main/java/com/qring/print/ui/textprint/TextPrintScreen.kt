@@ -79,6 +79,10 @@ fun TextPrintScreen(
     val uiState by viewModel.uiState.collectAsState()
     val printerStatus by viewModel.printerStatus.collectAsState()
 
+    LaunchedEffect(Unit) {
+        viewModel.loadFonts()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
