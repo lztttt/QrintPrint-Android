@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">错题小印</string>
+    <string name="app_subtitle">Qring Printer</string>
+
+    <!-- Tabs -->
+    <string name="tab_home">首页</string>
+    <string name="tab_template">模板</string>
+    <string name="tab_history">历史</string>
+    <string name="tab_mine">我的</string>
+
+    <!-- Quick actions -->
+    <string name="action_text">文字打印</string>
+    <string name="action_text_desc">纯文本、笔记、清单</string>
+    <string name="action_image">图片打印</string>
+    <string name="action_image_desc">相册图片、照片</string>
+    <string name="action_code">条码打印</string>
+    <string name="action_code_desc">二维码、条形码</string>
+    <string name="action_custom">自定义</string>
+    <string name="action_custom_desc">自由排版、多元素</string>
+
+    <!-- Printer status -->
+    <string name="quick_print">快速打印</string>
+    <string name="status_connected">已连接</string>
+    <string name="status_disconnected">未连接</string>
+    <string name="status_connecting">连接中…</string>
+    <string name="status_normal">正常</string>
+    <string name="status_cover_open">开盖</string>
+    <string name="status_no_paper">缺纸</string>
+    <string name="status_overheat">过热</string>
+    <string name="status_low_battery">低电量</string>
+    <string name="status_printing">打印中</string>
+    <string name="metric_paper">纸张</string>
+    <string name="metric_battery">电量</string>
+    <string name="metric_thickness">浓度</string>
+    <string name="metric_status">状态</string>
+
+    <!-- Bluetooth permission -->
+    <string name="bluetooth_reason">连接蓝牙热敏打印机</string>
+    <string name="bluetooth_discover_reason">搜索附近的打印机</string>
+    <string name="bluetooth_use_reason">与已配对打印机通信</string>
+
+    <!-- Device picker -->
+    <string name="select_printer">选择打印机</string>
+    <string name="scanning">正在搜索…</string>
+    <string name="no_devices">未发现打印机</string>
+    <string name="paired_devices">已配对设备</string>
+    <string name="available_devices">可用设备</string>
+
+    <!-- Text print -->
+    <string name="text_input_hint">请输入要打印的内容</string>
+    <string name="preview">预览</string>
+    <string name="print">打印</string>
+    <string name="printing">打印中…</string>
+    <string name="print_success">打印完成</string>
+    <string name="print_failed">打印失败</string>
+    <string name="font_size">字号</string>
+    <string name="line_spacing">行距</string>
+    <string name="letter_spacing">字距</string>
+    <string name="page_margin">边距</string>
+    <string name="font_family">字体</string>
+    <string name="connect_printer_first">请先在首页连接打印机</string>
+    <string name="enter_content">请输入要打印的内容</string>
+</resources>
