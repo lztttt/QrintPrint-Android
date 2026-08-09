@@ -6,11 +6,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.qring.print.bt.PrinterConnection
 import com.qring.print.bt.PrintResult
+import com.qring.print.data.HistoryRepository
 import com.qring.print.model.ConnState
+import com.qring.print.model.HIST_TYPE_TEXT
 import com.qring.print.model.PrinterStatus
 import com.qring.print.model.PrinterStatusRepository
-import com.qring.print.protocol.PrintResult as ProtocolPrintResult
-import com.qring.print.protocol.RasterData
 import com.qring.print.protocol.TextRenderOptions
 import com.qring.print.protocol.bitmapToRaster
 import com.qring.print.protocol.renderTextToPixelMap
@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 data class TextPrintUiState(
     val text: String = "",
@@ -43,6 +44,7 @@ data class TextPrintUiState(
 class TextPrintViewModel(application: Application) : AndroidViewModel(application) {
 
     private val printerConnection = PrinterConnection.getInstance()
+    private val historyRepo = HistoryRepository(application)
 
     private val _uiState = MutableStateFlow(TextPrintUiState())
     val uiState: StateFlow<TextPrintUiState> = _uiState.asStateFlow()
@@ -161,11 +163,35 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                 val result = withContext(Dispatchers.Default) {
                     val bitmap = renderTextToPixelMap(state.text, buildOptions())
                     val raster = bitmapToRaster(bitmap, 211) // THRESHOLD_TEXT = 212
-                    bitmap.recycle()
 
-                    withContext(Dispatchers.IO) {
+                    // 生成缩略图用于历史记录
+                    val thumbBitmap = Bitmap.createScaledBitmap(bitmap, 200, Math.round(200f * bitmap.height / bitmap.width), true)
+
+                    val printResult = withContext(Dispatchers.IO) {
                         printerConnection.printRaster(raster, 1)
                     }
+
+                    // 打印成功后保存历史
+                    if (printResult.ok) {
+                        try {
+                            val payload = JSONObject().apply {
+                                put("text", state.text)
+                                put("fontSize", state.fontSize.toDouble())
+                                put("bold", state.bold)
+                                put("italic", state.italic)
+                                put("underline", state.underline)
+                                put("letterSpacing", state.letterSpacing.toDouble())
+                                put("lineSpacing", state.lineSpacing.toDouble())
+                                put("pageMargin", state.pageMargin.toDouble())
+                                put("fontIndex", state.fontFamilyIndex)
+                            }.toString()
+                            historyRepo.saveHistory(HIST_TYPE_TEXT, thumbBitmap, payload)
+                        } catch (e: Exception) { }
+                    }
+
+                    bitmap.recycle()
+                    thumbBitmap.recycle()
+                    printResult
                 }
 
                 _uiState.value = _uiState.value.copy(

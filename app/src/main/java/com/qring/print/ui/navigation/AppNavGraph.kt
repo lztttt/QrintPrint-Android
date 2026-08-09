@@ -31,10 +31,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.qring.print.R
+import com.qring.print.model.HistoryRecord
 import com.qring.print.ui.codeprint.CodePrintScreen
 import com.qring.print.ui.customprint.CustomPrintScreen
+import com.qring.print.ui.history.HistoryScreen
 import com.qring.print.ui.home.HomeScreen
 import com.qring.print.ui.imageprint.ImagePrintScreen
+import com.qring.print.ui.template.TemplateScreen
 import com.qring.print.ui.theme.BRAND
 import com.qring.print.ui.theme.QringPalette
 import com.qring.print.ui.textprint.TextPrintScreen
@@ -71,7 +74,22 @@ fun AppNavHost() {
         startDestination = Routes.MAIN,
     ) {
         composable(Routes.MAIN) {
-            MainScreen(navController = navController)
+            MainScreen(
+                navController = navController,
+                onOpenTemplate = { templateId ->
+                    // 从模板页打开模板 → 跳到自定义打印页并加载
+                    navController.navigate(Routes.CUSTOM_PRINT)
+                },
+                onReopenHistory = { record ->
+                    // 从历史记录重打 → 根据类型跳对应页面
+                    when (record.typeName) {
+                        "text" -> navController.navigate(Routes.TEXT_PRINT)
+                        "image" -> navController.navigate(Routes.IMAGE_PRINT)
+                        "code" -> navController.navigate(Routes.CODE_PRINT)
+                        "custom" -> navController.navigate(Routes.CUSTOM_PRINT)
+                    }
+                }
+            )
         }
         composable(Routes.TEXT_PRINT) {
             TextPrintScreen(navController = navController)
@@ -89,7 +107,11 @@ fun AppNavHost() {
 }
 
 @Composable
-fun MainScreen(navController: NavHostController) {
+fun MainScreen(
+    navController: NavHostController,
+    onOpenTemplate: (String) -> Unit,
+    onReopenHistory: (HistoryRecord) -> Unit
+) {
     var currentIndex by rememberSaveable { mutableIntStateOf(0) }
 
     Scaffold(
@@ -119,22 +141,22 @@ fun MainScreen(navController: NavHostController) {
         Box(modifier = Modifier.padding(paddingValues)) {
             when (currentIndex) {
                 0 -> HomeScreen(navController = navController)
-                1 -> PlaceholderScreen("模板")
-                2 -> PlaceholderScreen("历史")
-                3 -> PlaceholderScreen("我的")
+                1 -> TemplateScreen(onOpenTemplate = onOpenTemplate)
+                2 -> HistoryScreen(onReopen = onReopenHistory)
+                3 -> MineScreen()
             }
         }
     }
 }
 
 @Composable
-fun PlaceholderScreen(title: String) {
+fun MineScreen() {
     Column(
         modifier = Modifier.padding(16.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(title, style = MaterialTheme.typography.headlineMedium)
+        Text("我的", style = MaterialTheme.typography.headlineMedium)
         Text(
             "敬请期待",
             style = MaterialTheme.typography.bodyMedium,
