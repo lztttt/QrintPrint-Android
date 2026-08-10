@@ -314,7 +314,7 @@ fun MineScreen(navController: NavHostController) {
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                InfoRow("开源地址", "github.com/Thisko/QrintPrint")
+                InfoRow("开源地址", "github.com/lztttt/QrintPrint")
                 InfoRow("开源协议", "MIT License")
                 InfoRow("开发语言", "Kotlin · Jetpack Compose")
                 InfoRow("设备支持", "错题小印系列 58mm 蓝牙热敏打印机")
@@ -559,10 +559,10 @@ fun AboutScreen(navController: NavHostController) {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "https://github.com/Thisko/QrintPrint",
+                        text = "https://github.com/lztttt/QrintPrint",
                         fontSize = 13.sp,
                         color = QringPalette.brand,
-                        modifier = Modifier.clickable { openUrl("https://github.com/Thisko/QrintPrint") }
+                        modifier = Modifier.clickable { openUrl("https://github.com/lztttt/QrintPrint") }
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(

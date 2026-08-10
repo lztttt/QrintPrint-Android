@@ -317,8 +317,13 @@ data class TextRenderOptions(
     val underline: Boolean = false,
     val letterSpacing: Float = 0f,
     val lineSpacing: Float = 6f,
-    val margin: Float = 8f
+    val margin: Float = 8f,
+    val alignment: TextAlignment = TextAlignment.LEFT
 )
+
+enum class TextAlignment {
+    LEFT, CENTER, RIGHT, STRETCH
+}
 
 // ── 文本排版与渲染 ──────────────────────────────────────────
 
@@ -437,18 +442,53 @@ fun renderTextToPixelMapIn(
 
     for (i in lines.indices) {
         val y = options.margin + i * lineHeight - fontMetrics.ascent
-        canvas.drawText(lines[i], options.margin, y, paint)
+        val line = lines[i]
+        val lineWidth = paint.measureText(line)
 
-        // 下划线
-        if (options.underline && lines[i].isNotEmpty()) {
-            val lineWidth = paint.measureText(lines[i])
-            val underlineTop = y + fontSizePx + 2
-            val underlineWeight = maxOf(1f, fontSizePx / 14f)
-            canvas.drawRect(
-                options.margin, underlineTop,
-                options.margin + lineWidth, underlineTop + underlineWeight,
-                paint
-            )
+        if (options.alignment == TextAlignment.STRETCH && line.isNotEmpty() && lineWidth > 0) {
+            // 整行平铺：调整字距使文字均匀填满可用宽度，不拉伸字体
+            // 总间隙 = usable - lineWidth，分配到 (charCount - 1) 个间距上
+            // 当只有1个字符时，偏移到居中即可
+            val charCount = line.length
+            if (charCount > 1) {
+                val extraSpace = usable - lineWidth
+                // paint.letterSpacing 的单位是 em，需要除以 textSize 转换
+                val extraLetterSpacing = (extraSpace / (charCount - 1)) / fontSizePx
+                val stretchPaint = Paint(paint)
+                stretchPaint.letterSpacing = spacingPx + extraLetterSpacing
+                // 重新度量：加了字距后文字实际宽度应约为 usable
+                canvas.drawText(line, options.margin, y, stretchPaint)
+                // 下划线
+                if (options.underline) {
+                    val underlineTop = y + fontSizePx + 2
+                    val underlineWeight = maxOf(1f, fontSizePx / 14f)
+                    canvas.drawRect(options.margin, underlineTop, options.margin + usable, underlineTop + underlineWeight, stretchPaint)
+                }
+            } else {
+                // 单字符居中
+                val x = options.margin + (usable - lineWidth) / 2f
+                canvas.drawText(line, x, y, paint)
+                if (options.underline) {
+                    val underlineTop = y + fontSizePx + 2
+                    val underlineWeight = maxOf(1f, fontSizePx / 14f)
+                    canvas.drawRect(x, underlineTop, x + lineWidth, underlineTop + underlineWeight, paint)
+                }
+            }
+        } else {
+            // 根据对齐方式计算 x 偏移
+            val x: Float = when (options.alignment) {
+                TextAlignment.LEFT -> options.margin
+                TextAlignment.CENTER -> options.margin + (usable - lineWidth) / 2f
+                TextAlignment.RIGHT -> options.margin + (usable - lineWidth)
+                TextAlignment.STRETCH -> options.margin // 不会走到这里
+            }
+            canvas.drawText(line, x, y, paint)
+            // 下划线
+            if (options.underline && line.isNotEmpty()) {
+                val underlineTop = y + fontSizePx + 2
+                val underlineWeight = maxOf(1f, fontSizePx / 14f)
+                canvas.drawRect(x, underlineTop, x + lineWidth, underlineTop + underlineWeight, paint)
+            }
         }
     }
 

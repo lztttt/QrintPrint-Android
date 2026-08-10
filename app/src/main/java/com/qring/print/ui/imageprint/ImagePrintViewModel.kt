@@ -22,6 +22,9 @@ import com.qring.print.protocol.createBinaryCanvas
 import com.qring.print.protocol.decodeSourceToPrintWidth
 import com.qring.print.protocol.ditherToBinary
 import com.qring.print.protocol.packBinaryToRaster
+import com.qring.print.protocol.rotateBinary
+import com.qring.print.protocol.flipBinaryHorizontal
+import com.qring.print.protocol.flipBinaryVertical
 import com.qring.print.protocol.scaleGrayArea
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -46,6 +49,12 @@ data class ImagePrintUiState(
     val resultMessage: String = "",
     val resultOk: Boolean = false,
     val sourceGray: GrayImage? = null,
+    // 旋转角度 0/90/180/270
+    val rotation: Int = 0,
+    // 水平翻转
+    val flipH: Boolean = false,
+    // 垂直翻转
+    val flipV: Boolean = false,
 )
 
 class ImagePrintViewModel(application: Application) : AndroidViewModel(application) {
@@ -99,6 +108,21 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.value = _uiState.value.copy(thickness = thickness)
     }
 
+    fun setRotation(degrees: Int) {
+        _uiState.value = _uiState.value.copy(rotation = ((degrees % 360) + 360) % 360)
+        reRender()
+    }
+
+    fun toggleFlipH() {
+        _uiState.value = _uiState.value.copy(flipH = !_uiState.value.flipH)
+        reRender()
+    }
+
+    fun toggleFlipV() {
+        _uiState.value = _uiState.value.copy(flipV = !_uiState.value.flipV)
+        reRender()
+    }
+
     /**
      * 解码图片并生成灰度缓存 + 实时预览。
      */
@@ -141,17 +165,30 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * 切换抖动模式 / 阈值后重新生成实时预览。
+     * 切换抖动模式 / 阈值 / 旋转 / 翻转后重新生成实时预览。
      */
     fun reRender() {
         val gray = _uiState.value.sourceGray ?: return
+        val state = _uiState.value
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(busy = true)
             try {
                 val old = _uiState.value.previewBitmap
                 val preview = withContext(Dispatchers.Default) {
-                    val binary = ditherToBinary(gray, _uiState.value.ditherMode, _uiState.value.threshold)
-                    binaryToPreviewBitmap(binary, gray.width, gray.height, false)
+                    var binary = ditherToBinary(gray, state.ditherMode, state.threshold)
+                    var w = gray.width
+                    var h = gray.height
+                    if (state.rotation % 360 != 0) {
+                        val (rot, nw, nh) = rotateBinary(binary, w, h, state.rotation)
+                        binary = rot; w = nw; h = nh
+                    }
+                    if (state.flipH) {
+                        binary = flipBinaryHorizontal(binary, w, h)
+                    }
+                    if (state.flipV) {
+                        binary = flipBinaryVertical(binary, w, h)
+                    }
+                    binaryToPreviewBitmap(binary, w, h, false)
                 }
                 _uiState.value = _uiState.value.copy(
                     previewBitmap = preview,
@@ -203,12 +240,25 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
 
                 // 光栅化 + 打印
                 val gray = _uiState.value.sourceGray!!
+                val state = _uiState.value
                 val result = withContext(Dispatchers.Default) {
-                    val binary = ditherToBinary(gray, _uiState.value.ditherMode, _uiState.value.threshold)
-                    val raster = packBinaryToRaster(binary, gray.width, gray.height)
+                    var binary = ditherToBinary(gray, state.ditherMode, state.threshold)
+                    var w = gray.width
+                    var h = gray.height
+                    if (state.rotation % 360 != 0) {
+                        val (rot, nw, nh) = rotateBinary(binary, w, h, state.rotation)
+                        binary = rot; w = nw; h = nh
+                    }
+                    if (state.flipH) {
+                        binary = flipBinaryHorizontal(binary, w, h)
+                    }
+                    if (state.flipV) {
+                        binary = flipBinaryVertical(binary, w, h)
+                    }
+                    val raster = packBinaryToRaster(binary, w, h)
 
                     // 生成缩略图
-                    val fullBmp = binaryToPreviewBitmap(binary, gray.width, gray.height, false)
+                    val fullBmp = binaryToPreviewBitmap(binary, w, h, false)
                     val thumbBmp = Bitmap.createScaledBitmap(fullBmp, 200, Math.round(200f * fullBmp.height / fullBmp.width), true)
 
                     val printResult = withContext(Dispatchers.IO) {

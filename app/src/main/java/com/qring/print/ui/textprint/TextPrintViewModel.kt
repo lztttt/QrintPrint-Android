@@ -16,6 +16,15 @@ import com.qring.print.protocol.TextRenderOptions
 import com.qring.print.ui.common.FontList
 import com.qring.print.protocol.bitmapToRaster
 import com.qring.print.protocol.renderTextToPixelMap
+import com.qring.print.protocol.rotateBinary
+import com.qring.print.protocol.packBinaryToRaster
+import com.qring.print.protocol.bitmapToGray
+import com.qring.print.protocol.ditherToBinary
+import com.qring.print.protocol.DitherMode
+import com.qring.print.protocol.GrayImage
+import com.qring.print.protocol.createBinaryCanvas
+import com.qring.print.protocol.blitBinary
+import com.qring.print.protocol.TextAlignment as ProtoTextAlignment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +33,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+
+enum class TextAlignment(val label: String) {
+    LEFT("左对齐"),
+    CENTER("居中"),
+    RIGHT("右对齐"),
+    STRETCH("整行平铺")
+}
 
 data class TextPrintUiState(
     val text: String = "",
@@ -44,6 +60,12 @@ data class TextPrintUiState(
     val fontFamilyIndex: Int = 0,
     // 打印浓度 1~5，0 表示默认（不发浓度命令）
     val thickness: Int = 1,
+    // 横排模式：true = 侧向打印
+    val landscape: Boolean = false,
+    // 横排模式下文字高度是否超限（>384点）
+    val landscapeOverflow: Boolean = false,
+    // 文字对齐方式
+    val alignment: TextAlignment = TextAlignment.LEFT,
 )
 
 class TextPrintViewModel(application: Application) : AndroidViewModel(application) {
@@ -80,7 +102,8 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                 lineSpacing = obj.optDouble("lineSpacing", 6.0).toFloat(),
                 pageMargin = obj.optDouble("pageMargin", 8.0).toFloat(),
                 fontFamilyIndex = obj.optInt("fontIndex", 0),
-                thickness = obj.optInt("thickness", 1)
+                thickness = obj.optInt("thickness", 1),
+                landscape = obj.optBoolean("landscape", false)
             )
         } catch (e: Exception) { }
     }
@@ -128,6 +151,16 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(thickness = thickness ?: 0)
     }
 
+    fun setLandscape(landscape: Boolean) {
+        _uiState.value = _uiState.value.copy(landscape = landscape)
+        updatePreview()
+    }
+
+    fun setAlignment(alignment: TextAlignment) {
+        _uiState.value = _uiState.value.copy(alignment = alignment)
+        updatePreview()
+    }
+
     fun loadFonts() {
         val fonts = FontList.getSystemFonts(getApplication())
         _uiState.value = _uiState.value.copy(fontFamilies = fonts)
@@ -141,6 +174,12 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun buildOptions(): TextRenderOptions {
         val state = _uiState.value
+        val protoAlign = when (state.alignment) {
+            TextAlignment.LEFT -> ProtoTextAlignment.LEFT
+            TextAlignment.CENTER -> ProtoTextAlignment.CENTER
+            TextAlignment.RIGHT -> ProtoTextAlignment.RIGHT
+            TextAlignment.STRETCH -> ProtoTextAlignment.STRETCH
+        }
         return TextRenderOptions(
             fontFamily = currentFamily(),
             fontSize = state.fontSize,
@@ -149,7 +188,8 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
             underline = state.underline,
             letterSpacing = state.letterSpacing,
             lineSpacing = state.lineSpacing,
-            margin = state.pageMargin
+            margin = state.pageMargin,
+            alignment = protoAlign
         )
     }
 
@@ -183,7 +223,6 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
             val old = _uiState.value.previewBitmap
             if (old != null) {
                 _uiState.value = _uiState.value.copy(previewBitmap = null)
-                // 清空时旧位图已不再显示，可安全回收
                 old.recycle()
             }
             return
@@ -193,7 +232,13 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val old = _uiState.value.previewBitmap
                 val bitmap = withContext(Dispatchers.Default) {
-                    renderTextToPixelMap(state.text, buildOptions())
+                    val bmp = renderTextToPixelMap(state.text, buildOptions())
+                    // 检查横排高度限制
+                    val overflow = state.landscape && bmp.height > 384
+                    _uiState.value = _uiState.value.copy(landscapeOverflow = overflow)
+                    // 横排预览：不旋转，文字正着显示（和自定义画布一样）
+                    // 打印时才旋转数据
+                    bmp
                 }
                 _uiState.value = _uiState.value.copy(previewBitmap = bitmap)
                 old?.let { if (it != bitmap) { delay(150); it.recycle() } }
@@ -239,10 +284,27 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                 // 渲染 + 光栅化 + 打印
                 val result = withContext(Dispatchers.Default) {
                     val bitmap = renderTextToPixelMap(state.text, buildOptions())
-                    val raster = bitmapToRaster(bitmap, 211) // THRESHOLD_TEXT = 212
+                    val raster = if (state.landscape) {
+                        // 横排打印：bitmap → binary → 旋转 270°CW → H×384 → raster
+                        val gray = bitmapToGray(bitmap)
+                        val binary = ditherToBinary(gray, DitherMode.NONE, 211)
+                        val (rot, rw, rh) = rotateBinary(binary, gray.width, gray.height, 270)
+                        packBinaryToRaster(rot, rw, rh)
+                    } else {
+                        bitmapToRaster(bitmap, 211)
+                    }
 
                     // 生成缩略图用于历史记录
-                    val thumbBitmap = Bitmap.createScaledBitmap(bitmap, 200, Math.round(200f * bitmap.height / bitmap.width), true)
+                    val thumbBitmap = if (state.landscape) {
+                        // 横排缩略图旋转 270°CW
+                        val m = android.graphics.Matrix().apply { postRotate(270f) }
+                        val rotated = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
+                        Bitmap.createScaledBitmap(rotated, 200, Math.round(200f * rotated.height / rotated.width), true).also {
+                            if (rotated != bitmap) rotated.recycle()
+                        }
+                    } else {
+                        Bitmap.createScaledBitmap(bitmap, 200, Math.round(200f * bitmap.height / bitmap.width), true)
+                    }
 
                     val printResult = withContext(Dispatchers.IO) {
                         printerConnection.printRaster(raster, state.thickness.takeIf { it > 0 })
@@ -262,6 +324,7 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                                 put("pageMargin", state.pageMargin.toDouble())
                                 put("fontIndex", state.fontFamilyIndex)
                                 put("thickness", state.thickness)
+                                put("landscape", state.landscape)
                             }.toString()
                             historyRepo.saveHistory(HIST_TYPE_TEXT, thumbBitmap, payload)
                         } catch (e: Exception) { }

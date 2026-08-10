@@ -53,6 +53,8 @@ data class CustomPrintUiState(
     val currentTemplateName: String = "",
     val compositeBitmap: Bitmap? = null,
     val showPreview: Boolean = false,
+    // 打印浓度 1~5，0 表示默认
+    val thickness: Int = 1,
 )
 
 class CustomPrintViewModel(application: Application) : AndroidViewModel(application) {
@@ -375,6 +377,10 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         updateComposite()
     }
 
+    fun setThickness(thickness: Int?) {
+        _uiState.value = _uiState.value.copy(thickness = thickness ?: 0)
+    }
+
     fun swapSelectedImage(uri: Uri) {
         val doc = _uiState.value.doc
         val sel = doc.selected() ?: return
@@ -607,7 +613,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
                     val thumbBmp = Bitmap.createScaledBitmap(fullBmp, 200, Math.round(200f * fullBmp.height / fullBmp.width), true)
 
                     val printResult = withContext(Dispatchers.IO) {
-                        printerConnection.printRaster(raster, null)
+                        printerConnection.printRaster(raster, _uiState.value.thickness.takeIf { it > 0 })
                     }
 
                     // 打印成功后保存历史

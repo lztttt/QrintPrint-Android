@@ -29,7 +29,7 @@ class UpdateManager(private val app: Application) {
     // GitHub 仓库配置 —— 按实际项目修改
     companion object {
         // 从 BuildConfig 读取，或硬编码
-        val GITHUB_OWNER = "Thisko"
+        val GITHUB_OWNER = "lztttt"
         val GITHUB_REPO = "QrintPrint"
         val CURRENT_VERSION = com.qring.print.BuildConfig.VERSION_NAME
     }

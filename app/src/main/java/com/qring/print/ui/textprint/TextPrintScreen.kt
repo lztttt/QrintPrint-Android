@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -85,7 +87,8 @@ fun TextPrintScreen(
     // 自动预览：内容 / 排版参数变化后防抖渲染，不弹窗
     LaunchedEffect(
         uiState.text, uiState.fontSize, uiState.bold, uiState.italic, uiState.underline,
-        uiState.letterSpacing, uiState.lineSpacing, uiState.pageMargin, uiState.fontFamilyIndex
+        uiState.letterSpacing, uiState.lineSpacing, uiState.pageMargin, uiState.fontFamilyIndex,
+        uiState.landscape
     ) {
         delay(400)
         viewModel.updatePreview()
@@ -114,7 +117,10 @@ fun TextPrintScreen(
         PreviewCard(
             preview = uiState.previewBitmap,
             text = uiState.text,
-            margin = uiState.pageMargin
+            margin = uiState.pageMargin,
+            landscape = uiState.landscape,
+            overflow = uiState.landscapeOverflow,
+            alignment = uiState.alignment
         )
 
         // 中间：输入 + 打印设置（可滚动）
@@ -135,7 +141,10 @@ fun TextPrintScreen(
                 onLineSpacingChange = viewModel::updateLineSpacing,
                 onPageMarginChange = viewModel::updatePageMargin,
                 onFontFamilyChange = viewModel::setFontFamilyIndex,
-                onThicknessChange = viewModel::setThickness
+                onThicknessChange = viewModel::setThickness,
+                onLandscapeChange = viewModel::setLandscape,
+                onAlignmentChange = viewModel::setAlignment,
+                alignment = uiState.alignment
             )
         }
 
@@ -163,7 +172,10 @@ private fun InputAndSettings(
     onLineSpacingChange: (Float) -> Unit,
     onPageMarginChange: (Float) -> Unit,
     onFontFamilyChange: (Int) -> Unit,
-    onThicknessChange: (Int?) -> Unit
+    onThicknessChange: (Int?) -> Unit,
+    onLandscapeChange: (Boolean) -> Unit,
+    onAlignmentChange: (TextAlignment) -> Unit,
+    alignment: TextAlignment
 ) {
     Column(
         modifier = Modifier
@@ -295,6 +307,69 @@ private fun InputAndSettings(
                         onThicknessChange = onThicknessChange,
                         enabled = !uiState.printing
                     )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // 横排切换
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "横排打印",
+                            modifier = Modifier.weight(1f),
+                            fontSize = 13.sp,
+                            color = QringPalette.textPrimary
+                        )
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(QringPalette.surface)
+                                .clickable(enabled = !uiState.printing) { onLandscapeChange(!uiState.landscape) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (uiState.landscape) "横排" else "竖排",
+                                fontSize = 13.sp,
+                                color = QringPalette.brand
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // 对齐方式
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "对齐",
+                            modifier = Modifier.weight(1f),
+                            fontSize = 13.sp,
+                            color = QringPalette.textPrimary
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val alignOptions = if (uiState.landscape) {
+                            listOf(TextAlignment.LEFT, TextAlignment.CENTER, TextAlignment.RIGHT)
+                        } else {
+                            TextAlignment.entries.toList()
+                        }
+                        alignOptions.forEach { option ->
+                            AlignChip(
+                                label = option.label,
+                                active = alignment == option,
+                                modifier = Modifier.weight(1f),
+                                onTap = { onAlignmentChange(option) }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -372,7 +447,10 @@ private fun BottomActionBar(
 private fun PreviewCard(
     preview: android.graphics.Bitmap?,
     text: String,
-    margin: Float
+    margin: Float,
+    landscape: Boolean = false,
+    overflow: Boolean = false,
+    alignment: TextAlignment = TextAlignment.LEFT
 ) {
     Card(
         modifier = Modifier
@@ -389,7 +467,10 @@ private fun PreviewCard(
         ) {
             Text(
                 text = if (preview != null)
-                    "宽 384 点(${String.format("%.1f", 384 / 8.0)}mm) × 高 ${preview.height} 点(${String.format("%.1f", preview.height / 8.0)}mm) · 边距 ${margin.toInt()} 点"
+                    if (landscape)
+                        "横排 宽 ${preview.width} 点(${String.format("%.1f", preview.width / 8.0)}mm) × 高 ${preview.height} 点(${String.format("%.1f", preview.height / 8.0)}mm) · ${alignment.label}"
+                    else
+                        "宽 384 点(${String.format("%.1f", 384 / 8.0)}mm) × 高 ${preview.height} 点(${String.format("%.1f", preview.height / 8.0)}mm) · ${alignment.label}"
                 else if (text.isEmpty())
                     "输入内容后自动预览"
                 else
@@ -398,23 +479,54 @@ private fun PreviewCard(
                 color = QringPalette.textSecondary
             )
         Spacer(modifier = Modifier.height(6.dp))
-        Box(
+        if (overflow) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFF4D4F).copy(alpha = 0.1f)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    text = "⚠ 文字高度超过 384 点，横排打印会被截断！请减小字号或行距",
+                    modifier = Modifier.padding(8.dp),
+                    color = Color(0xFFFF4D4F),
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+        // 使用 BoxWithConstraints 获取可用宽度，计算画布缩放比
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(180.dp)
+                .height(200.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color.White)
         ) {
+            val canvasWidthDp = maxWidth.value
+            // 基于 384 点计算缩放比（与自定义打印画布一致）
+            val scale = canvasWidthDp / 384f
+            val scrollState = rememberScrollState()
+
             when {
                 preview != null -> {
-                    Image(
-                        bitmap = preview.asImageBitmap(),
-                        contentDescription = "打印预览",
+                    // 横排和竖排都不旋转预览位图，文字正着显示
+                    // preview 尺寸为 384×H
+                    val contentH = (preview.height * scale)
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .verticalScroll(rememberScrollState()),
-                        contentScale = ContentScale.FillWidth
-                    )
+                            .height(200.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Image(
+                            bitmap = preview.asImageBitmap(),
+                            contentDescription = "打印预览",
+                            modifier = Modifier
+                                .width(canvasWidthDp.dp)
+                                .height(contentH.dp),
+                            contentScale = ContentScale.FillBounds
+                        )
+                    }
                 }
                 text.isEmpty() -> {
                     Text(
@@ -654,6 +766,30 @@ private fun ToggleChip(
             fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
             fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
             textDecoration = if (underline) TextDecoration.Underline else TextDecoration.None,
+            color = if (active) Color.White else QringPalette.textPrimary
+        )
+    }
+}
+
+@Composable
+private fun AlignChip(
+    label: String,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    onTap: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(32.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (active) QringPalette.brand else QringPalette.surface)
+            .clickable(onClick = onTap),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
             color = if (active) Color.White else QringPalette.textPrimary
         )
     }

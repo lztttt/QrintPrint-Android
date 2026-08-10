@@ -3,6 +3,7 @@ package com.qring.print.ui.codeprint
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.wifi.WifiManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.zxing.BarcodeFormat
@@ -26,6 +27,8 @@ import com.qring.print.protocol.DitherMode
 import com.qring.print.protocol.packBinaryToRaster
 import com.qring.print.protocol.scaleGrayNearest
 import com.qring.print.protocol.squeezeRows
+import com.qring.print.protocol.createBinaryCanvas
+import com.qring.print.protocol.blitBinary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +37,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+
+enum class CodeAlignment(val label: String) {
+    LEFT("左对齐"),
+    CENTER("居中"),
+    RIGHT("右对齐")
+}
 
 data class CodePrintUiState(
     val content: String = "",
@@ -44,12 +53,17 @@ data class CodePrintUiState(
     val resultMessage: String = "",
     val resultOk: Boolean = false,
     val busy: Boolean = false,
+    // 打印尺寸比例 0~100，对应 38~384 点
+    val scalePercent: Int = 50,
+    // 对齐方式
+    val alignment: CodeAlignment = CodeAlignment.CENTER,
 )
 
 class CodePrintViewModel(application: Application) : AndroidViewModel(application) {
 
     private val printerConnection = PrinterConnection.getInstance()
     private val historyRepo = HistoryRepository(application)
+    private val app = application
 
     private val _uiState = MutableStateFlow(CodePrintUiState())
     val uiState: StateFlow<CodePrintUiState> = _uiState.asStateFlow()
@@ -88,6 +102,96 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(codeTypeIndex = index)
     }
 
+    fun setScalePercent(percent: Int) {
+        _uiState.value = _uiState.value.copy(scalePercent = percent.coerceIn(10, 100))
+    }
+
+    fun setAlignment(alignment: CodeAlignment) {
+        _uiState.value = _uiState.value.copy(alignment = alignment)
+    }
+
+    /** 快速模板填充 */
+    fun applyTemplate(template: com.qring.print.ui.codeprint.CodeTemplate) {
+        when (template) {
+            com.qring.print.ui.codeprint.CodeTemplate.TEXT -> {
+                _uiState.value = _uiState.value.copy(
+                    content = "",
+                    codeTypeIndex = 0
+                )
+                updatePreview()
+            }
+            else -> { /* handled via dialog in Screen */ }
+        }
+    }
+
+    /** URL 模板 */
+    fun applyUrlTemplate(url: String) {
+        val finalUrl = url.trim().let { if (it.isEmpty()) "" else it }
+        _uiState.value = _uiState.value.copy(
+            content = finalUrl,
+            codeTypeIndex = 0
+        )
+        updatePreview()
+    }
+
+    /** 电话模板 */
+    fun applyPhoneTemplate(phone: String) {
+        val p = phone.trim()
+        _uiState.value = _uiState.value.copy(
+            content = if (p.isEmpty()) "" else "tel:$p",
+            codeTypeIndex = 4
+        )
+        updatePreview()
+    }
+
+    /** WiFi 模板：生成 WIFI:T:WPA;S:ssid;P:password;; 格式 */
+    fun applyWifiTemplate(ssid: String, password: String, encryption: String) {
+        val s = ssid.trim()
+        val p = password.trim()
+        val enc = when (encryption.uppercase()) {
+            "WPA", "WPA2", "WPA/WPA2" -> "WPA"
+            "WEP" -> "WEP"
+            else -> "nopass"
+        }
+        val content = if (s.isEmpty()) "" else "WIFI:T:$enc;S:$s;P:$p;;"
+        _uiState.value = _uiState.value.copy(content = content, codeTypeIndex = 0)
+        updatePreview()
+    }
+
+    /** 邮箱模板 */
+    fun applyEmailTemplate(email: String) {
+        val e = email.trim()
+        _uiState.value = _uiState.value.copy(
+            content = if (e.isEmpty()) "" else "mailto:$e",
+            codeTypeIndex = 0
+        )
+        updatePreview()
+    }
+
+    /** 短信模板 */
+    fun applySmsTemplate(phone: String) {
+        val p = phone.trim()
+        _uiState.value = _uiState.value.copy(
+            content = if (p.isEmpty()) "" else "sms:$p",
+            codeTypeIndex = 0
+        )
+        updatePreview()
+    }
+
+    /** 尝试获取当前连接的 WiFi SSID */
+    fun getCurrentWifiSsid(): String {
+        return try {
+            @Suppress("DEPRECATION")
+            val wifiManager = app.getSystemService(android.content.Context.WIFI_SERVICE) as? WifiManager
+            @Suppress("DEPRECATION")
+            val info = wifiManager?.connectionInfo
+            val ssid = info?.ssid?.removePrefix("\"")?.removeSuffix("\"") ?: ""
+            if (ssid == "<unknown ssid>" || ssid.isEmpty()) "" else ssid
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     /** 码制对应的 ZXing 格式 */
     private fun formatFor(codeTypeIndex: Int): BarcodeFormat {
         val label = com.qring.print.model.CODE_TYPES.getOrNull(codeTypeIndex)?.label ?: "QR Code"
@@ -111,9 +215,11 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
         com.qring.print.model.CODE_TYPES.getOrNull(codeTypeIndex)?.category == com.qring.print.model.CodeCategory.ONE_D
 
     /**
-     * 把内容渲染成 384 点宽的条码灰度 + 二值，返回 (binary, gray)。内容为空返回 null。
+     * 把内容渲染成 384 点宽的条码灰度 + 二值，返回 (binary, width, height)。
+     * 码图按 scalePercent 缩放并按 alignment 对齐在 384 宽画布上。
+     * 内容为空返回 null。
      */
-    private fun renderCode(state: CodePrintUiState): Pair<ByteArray, GrayImage>? {
+    private fun renderCode(state: CodePrintUiState): Triple<ByteArray, Int, Int>? {
         if (state.content.isEmpty()) return null
         val format = formatFor(state.codeTypeIndex)
         val size = 384
@@ -135,13 +241,28 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
         if (isOneD(state.codeTypeIndex)) {
             gray = squeezeRows(gray, 140)
         }
-        // 缩放到目标尺寸
-        val targetW = if (isOneD(state.codeTypeIndex)) 280 else 160
-        val targetH = if (isOneD(state.codeTypeIndex)) 140 else 160
+        // 根据 scalePercent 计算目标尺寸：10%~100% 对应 38~384 点
+        val maxDim = if (isOneD(state.codeTypeIndex)) 384 else 384
+        val targetW = (maxDim * state.scalePercent / 100).coerceAtLeast(38)
+        val targetH = if (isOneD(state.codeTypeIndex)) {
+            (140 * state.scalePercent / 100).coerceAtLeast(20)
+        } else {
+            targetW  // 二维码正方形
+        }
         val scaled = scaleGrayNearest(gray, targetW, targetH)
         // 纯阈值，不抖动
-        val binary = ditherToBinary(scaled, DitherMode.NONE, 128)
-        return Pair(binary, scaled)
+        val srcBinary = ditherToBinary(scaled, DitherMode.NONE, 128)
+        // 按 alignment 放到 384 宽画布上
+        val canvasW = WIDTH_DOTS
+        val canvasH = targetH
+        val canvas = createBinaryCanvas(canvasW, canvasH)
+        val offsetX = when (state.alignment) {
+            CodeAlignment.LEFT -> 0
+            CodeAlignment.CENTER -> ((canvasW - targetW) / 2).coerceAtLeast(0)
+            CodeAlignment.RIGHT -> (canvasW - targetW).coerceAtLeast(0)
+        }
+        blitBinary(canvas, canvasW, canvasH, srcBinary, targetW, targetH, offsetX, 0)
+        return Triple(canvas, canvasW, canvasH)
     }
 
     /** 实时预览：内容/码制变化时调用 */
@@ -160,7 +281,8 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                 val old = _uiState.value.previewBitmap
                 val preview = withContext(Dispatchers.Default) {
                     val result = renderCode(_uiState.value) ?: return@withContext null
-                    binaryToPreviewBitmap(result.first, result.second.width, result.second.height, false)
+                    val (binary, w, h) = result
+                    binaryToPreviewBitmap(binary, w, h, false)
                 } ?: return@launch
                 _uiState.value = _uiState.value.copy(previewBitmap = preview)
                 // 等当前帧画完旧位图再回收
@@ -212,11 +334,11 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                 // 重新生成并打印
                 val result = withContext(Dispatchers.Default) {
                     val r = renderCode(_uiState.value) ?: return@withContext null
-                    val (binary, scaled) = r
-                    val raster = packBinaryToRaster(binary, scaled.width, scaled.height)
+                    val (binary, w, h) = r
+                    val raster = packBinaryToRaster(binary, w, h)
 
                     // 生成缩略图
-                    val fullBmp = binaryToPreviewBitmap(binary, scaled.width, scaled.height, false)
+                    val fullBmp = binaryToPreviewBitmap(binary, w, h, false)
                     val thumbBmp = Bitmap.createScaledBitmap(fullBmp, 200, Math.round(200f * fullBmp.height / fullBmp.width), true)
 
                     val printResult = withContext(Dispatchers.IO) {

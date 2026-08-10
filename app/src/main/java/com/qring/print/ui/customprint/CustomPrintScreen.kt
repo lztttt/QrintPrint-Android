@@ -33,6 +33,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -161,6 +163,45 @@ fun CustomPrintScreen(
                     viewModel.showElementEditor()
                 }
             )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 打印浓度
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "打印浓度",
+                            modifier = Modifier.weight(1f),
+                            fontSize = 13.sp,
+                            color = QringPalette.textPrimary
+                        )
+                        Text(
+                            text = if (uiState.thickness > 0) uiState.thickness.toString() else "默认",
+                            fontSize = 13.sp,
+                            color = QringPalette.textSecondary
+                        )
+                    }
+                    Slider(
+                        value = uiState.thickness.toFloat(),
+                        onValueChange = { v ->
+                            val rounded = Math.round(v)
+                            viewModel.setThickness(if (rounded == 0) null else rounded)
+                        },
+                        valueRange = 0f..5f,
+                        steps = 4,
+                        enabled = !uiState.printing,
+                        colors = SliderDefaults.colors(
+                            thumbColor = QringPalette.brand,
+                            activeTrackColor = QringPalette.brand
+                        )
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 

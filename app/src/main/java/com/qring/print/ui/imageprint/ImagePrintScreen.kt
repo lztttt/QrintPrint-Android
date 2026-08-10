@@ -164,6 +164,19 @@ fun ImagePrintScreen(
                     onThicknessChange = viewModel::setThickness,
                     enabled = !uiState.printing
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 变换：旋转 + 翻转
+                TransformCard(
+                    rotation = uiState.rotation,
+                    flipH = uiState.flipH,
+                    flipV = uiState.flipV,
+                    onRotationChange = viewModel::setRotation,
+                    onFlipHChange = viewModel::toggleFlipH,
+                    onFlipVChange = viewModel::toggleFlipV,
+                    enabled = !uiState.busy && !uiState.printing
+                )
             } else {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -405,6 +418,111 @@ activeTrackColor = QringPalette.brand
                 )
             )
         }
+    }
+}
+
+@Composable
+private fun TransformCard(
+    rotation: Int,
+    flipH: Boolean,
+    flipV: Boolean,
+    onRotationChange: (Int) -> Unit,
+    onFlipHChange: () -> Unit,
+    onFlipVChange: () -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "变换",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = QringPalette.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "${rotation}°",
+                    fontSize = 13.sp,
+                    color = QringPalette.textSecondary
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            // 旋转按钮行
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TransformButton(
+                    label = "+90°",
+                    modifier = Modifier.weight(1f),
+                    enabled = enabled,
+                    onClick = { onRotationChange(rotation + 90) }
+                )
+                TransformButton(
+                    label = "-90°",
+                    modifier = Modifier.weight(1f),
+                    enabled = enabled,
+                    onClick = { onRotationChange(rotation - 90) }
+                )
+                TransformButton(
+                    label = "+180°",
+                    modifier = Modifier.weight(1f),
+                    enabled = enabled,
+                    onClick = { onRotationChange(rotation + 180) }
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            // 翻转按钮行
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TransformButton(
+                    label = "水平翻转",
+                    active = flipH,
+                    modifier = Modifier.weight(1f),
+                    enabled = enabled,
+                    onClick = onFlipHChange
+                )
+                TransformButton(
+                    label = "垂直翻转",
+                    active = flipV,
+                    modifier = Modifier.weight(1f),
+                    enabled = enabled,
+                    onClick = onFlipVChange
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransformButton(
+    label: String,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) QringPalette.brand else QringPalette.surfaceSunken)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+            color = if (active) Color.White else QringPalette.textPrimary
+        )
     }
 }
 
