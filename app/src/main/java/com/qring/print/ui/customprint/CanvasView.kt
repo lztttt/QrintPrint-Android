@@ -116,124 +116,212 @@ fun CanvasView(
         }
     }
 
-    val baseModifier = if (landscape) {
-        modifier
-            .fillMaxWidth()
-            .height(boxHeightDp.dp)
-            .horizontalScroll(landscapeScroll)
-            .clip(RoundedCornerShape(12.dp))
-            .background(QringPalette.paper)
-            .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(12.dp))
-    } else {
-        modifier
-            .fillMaxWidth()
-            .height(boxHeightDp.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(QringPalette.paper)
-            .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(12.dp))
-    }
+    // 横排可见宽度（屏幕上的）
+    val viewportWidthDp = canvasWidthDp
+    val contentWidthDp = if (landscape) (refW * scale) else canvasWidthDp
+    val showScrollbar = landscape && contentWidthDp > viewportWidthDp
 
-    Box(modifier = baseModifier) {
-        // 横排时内容区域宽度 = refW * scale，竖排填满宽度
-        val contentWidthDp = if (landscape) (refW * scale) else canvasWidthDp
+    Column(modifier = modifier) {
+        val baseModifier = if (landscape) {
+            Modifier
+                .fillMaxWidth()
+                .height(boxHeightDp.dp)
+                .horizontalScroll(landscapeScroll)
+                .clip(RoundedCornerShape(12.dp))
+                .background(QringPalette.paper)
+                .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(12.dp))
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .height(boxHeightDp.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(QringPalette.paper)
+                .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(12.dp))
+        }
 
-        Box(modifier = Modifier.width(contentWidthDp.dp).height(boxHeightDp.dp)) {
-            // 合成图
-            if (compositeBitmap != null) {
-                if (landscape) {
-                    // 横排：bitmap 右对齐（dotY=0 在右侧）
-                    val bmpOffsetX = (refW - bmpW) * scale
-                    Image(
-                        bitmap = compositeBitmap.asImageBitmap(),
-                        contentDescription = "画布预览",
-                        modifier = Modifier
-                            .offset(x = bmpOffsetX.dp)
-                            .width((bmpW * scale).dp)
-                            .height((bmpH * scale).dp),
-                        contentScale = ContentScale.FillBounds
-                    )
-                } else {
-                    Image(
-                        bitmap = compositeBitmap.asImageBitmap(),
-                        contentDescription = "画布预览",
-                        modifier = Modifier.fillMaxWidth(),
-                        contentScale = ContentScale.FillWidth
-                    )
+        Box(modifier = baseModifier) {
+            // 横排时内容区域宽度 = refW * scale，竖排填满宽度
+            Box(modifier = Modifier.width(contentWidthDp.dp).height(boxHeightDp.dp)) {
+                // 合成图
+                if (compositeBitmap != null) {
+                    if (landscape) {
+                        // 横排：bitmap 右对齐（dotY=0 在右侧）
+                        val bmpOffsetX = (refW - bmpW) * scale
+                        Image(
+                            bitmap = compositeBitmap.asImageBitmap(),
+                            contentDescription = "画布预览",
+                            modifier = Modifier
+                                .offset(x = bmpOffsetX.dp)
+                                .width((bmpW * scale).dp)
+                                .height((bmpH * scale).dp),
+                            contentScale = ContentScale.FillBounds
+                        )
+                    } else {
+                        Image(
+                            bitmap = compositeBitmap.asImageBitmap(),
+                            contentDescription = "画布预览",
+                            modifier = Modifier.fillMaxWidth(),
+                            contentScale = ContentScale.FillWidth
+                        )
+                    }
                 }
-            }
 
-        // 元素选择框（统一用 dp：offset 与 size 单位一致，保证选框和预览对齐）
-        elements.forEach { el ->
-            val isSelected = el.id == selectedId
-            // 横排时把元素坐标旋转映射到显示空间
-            val boxX: Int
-            val boxY: Int
-            val boxW: Int
-            val boxH: Int
-            if (landscape) {
-                // 横排：用固定 refW 做参考，dotY 变化时 boxX 真正变化
-                boxX = refW - el.dotY - el.dotH
-                boxY = el.dotX
-                boxW = el.dotH
-                boxH = el.dotW
-            } else {
-                boxX = el.dotX
-                boxY = el.dotY
-                boxW = el.dotW
-                boxH = el.dotH
-            }
-            // 统一用 scale（固定 384 基准），横排和竖排一致，元素不拉伸
-            val xDp = (boxX * scale).dp
-            val yDp = (boxY * scale).dp
-            val wDp = (boxW * scale).dp
-            val hDp = (boxH * scale).dp
+                // 元素选择框（统一用 dp：offset 与 size 单位一致，保证选框和预览对齐）
+                elements.forEach { el ->
+                    val isSelected = el.id == selectedId
+                    // 横排时把元素坐标旋转映射到显示空间
+                    val boxX: Int
+                    val boxY: Int
+                    val boxW: Int
+                    val boxH: Int
+                    if (landscape) {
+                        // 横排：用固定 refW 做参考，dotY 变化时 boxX 真正变化
+                        boxX = refW - el.dotY - el.dotH
+                        boxY = el.dotX
+                        boxW = el.dotH
+                        boxH = el.dotW
+                    } else {
+                        boxX = el.dotX
+                        boxY = el.dotY
+                        boxW = el.dotW
+                        boxH = el.dotH
+                    }
+                    // 统一用 scale（固定 384 基准），横排和竖排一致，元素不拉伸
+                    val xDp = (boxX * scale).dp
+                    val yDp = (boxY * scale).dp
+                    val wDp = (boxW * scale).dp
+                    val hDp = (boxH * scale).dp
 
-            Box(
-                modifier = Modifier
-                    .offset(x = xDp, y = yDp)
-                    .size(width = wDp, height = hDp)
-                    .border(
-                        width = if (isSelected) 2.dp else 0.dp,
-                        color = QringPalette.selectOutline,
-                        shape = RoundedCornerShape(2.dp)
-                    )
-                    .clickable { onSelect(el.id) }
-                    .then(
-                        if (isSelected) {
-                            // key 只含 el.id 和 landscape（切换横竖排时重启）；scale 用 rememberUpdatedState 避免拖拽中重启
-                            Modifier.pointerInput(el.id, landscape) {
-                                detectDragGestures { change, dragAmount ->
-                                    change.consume()
-                                    val dxDot = (dragAmount.x / currentScale).roundToInt()
-                                    val dyDot = (dragAmount.y / currentScale).roundToInt()
-                                    if (dxDot != 0 || dyDot != 0) {
-                                        if (currentLandscape) {
-                                            // 横排显示是竖排旋转 90° 的结果，屏幕位移要反向映射回画布坐标
-                                            onMove(el.id, dyDot, -dxDot)
-                                        } else {
-                                            onMove(el.id, dxDot, dyDot)
-                                        }
-                                    }
-                                }
-                            }
-                        } else Modifier
-                    )
-            ) {
-                // 缩放手柄（仅选中时显示）
-                if (isSelected && el.kind != ElementKind.TEXT) {
                     Box(
                         modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .size(Metrics.HANDLE_SIZE.dp)
-                            .clip(CircleShape)
-                            .background(QringPalette.handleFill)
-                            .border(2.dp, Color.White, CircleShape)
-                    )
+                            .offset(x = xDp, y = yDp)
+                            .size(width = wDp, height = hDp)
+                            .border(
+                                width = if (isSelected) 2.dp else 0.dp,
+                                color = QringPalette.selectOutline,
+                                shape = RoundedCornerShape(2.dp)
+                            )
+                            .clickable { onSelect(el.id) }
+                            .then(
+                                if (isSelected) {
+                                    Modifier.pointerInput(el.id, landscape) {
+                                        detectDragGestures { change, dragAmount ->
+                                            change.consume()
+                                            val dxDot = (dragAmount.x / currentScale).roundToInt()
+                                            val dyDot = (dragAmount.y / currentScale).roundToInt()
+                                            if (dxDot != 0 || dyDot != 0) {
+                                                if (currentLandscape) {
+                                                    onMove(el.id, dyDot, -dxDot)
+                                                } else {
+                                                    onMove(el.id, dxDot, dyDot)
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else Modifier
+                            )
+                    ) {
+                        // 缩放手柄（仅选中时显示）
+                        if (isSelected && el.kind != ElementKind.TEXT) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .size(Metrics.HANDLE_SIZE.dp)
+                                    .clip(CircleShape)
+                                    .background(QringPalette.handleFill)
+                                    .border(2.dp, Color.White, CircleShape)
+                            )
+                        }
+                    }
                 }
-            }
+            }  // 内层 Box
+        }  // 外层 Box
+
+        // 横排滚动位置指示条
+        if (showScrollbar) {
+            Spacer(modifier = Modifier.height(4.dp))
+            CanvasScrollBar(
+                scrollState = landscapeScroll,
+                contentWidthDp = contentWidthDp,
+                viewportWidthDp = viewportWidthDp,
+                scale = scale,
+                refW = refW
+            )
         }
-        }  // 内层 Box
-    }  // 外层 Box
+    }
+}
+
+/**
+ * 横排画布滚动位置指示条。
+ * 显示当前可见区域在内容中的位置，并标注点数坐标。
+ */
+@Composable
+private fun CanvasScrollBar(
+    scrollState: androidx.compose.foundation.ScrollState,
+    contentWidthDp: Float,
+    viewportWidthDp: Float,
+    scale: Float,
+    refW: Int
+) {
+    val scrollPx = scrollState.value
+    val maxScroll = scrollState.maxValue.coerceAtLeast(1)
+    val scrollRatio = scrollPx.toFloat() / maxScroll
+
+    // 指示条宽度比例
+    val barRatio = viewportWidthDp / contentWidthDp
+    val barWidthDp = (viewportWidthDp * barRatio).coerceAtLeast(20f)
+
+    // 指示条位置
+    val trackWidthDp = viewportWidthDp - barWidthDp
+    val barOffsetDp = trackWidthDp * scrollRatio
+
+    // 当前可见区域对应的点数范围
+    val visibleStartDot = ((refW - scrollPx / scale).roundToInt()).coerceIn(0, refW)
+    val visibleEndDot = ((refW - (scrollPx + viewportWidthDp / scale) / 1f).roundToInt()).coerceIn(0, refW)
+    // 实际：左边的点 = refW - (scrollPx/scale + viewportWidthDp/scale), 右边的点 = refW - scrollPx/scale
+    val rightDot = (refW - scrollPx / scale).roundToInt()
+    val leftDot = (refW - (scrollPx + viewportWidthDp / scale) / 1f / 1f).roundToInt()
+    val leftDotClamped = leftDot.coerceIn(0, refW)
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 点数标注
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "${leftDotClamped}点",
+                fontSize = 9.sp,
+                color = QringPalette.textSecondary
+            )
+            Text(
+                text = "${rightDot.coerceIn(0, refW)}点",
+                fontSize = 9.sp,
+                color = QringPalette.textSecondary
+            )
+        }
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        // 轨道
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(QringPalette.surfaceSunken)
+        ) {
+            // 滑块
+            Box(
+                modifier = Modifier
+                    .offset(x = barOffsetDp.dp)
+                    .width(barWidthDp.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(QringPalette.brand)
+            )
+        }
+    }
 }
 
 /**
