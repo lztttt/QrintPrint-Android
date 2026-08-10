@@ -135,11 +135,13 @@ data class CanvasDoc(
     /**
      * 画布当前长度（点）。
      * 取「最靠下元素的底边 + 留白」和「最小长度」中的大者。
+     *
+     * 横排时元素内容预旋转 270°，在竖排画布上的纵向占用是 dotW 而非 dotH。
      */
     fun height(): Int {
         var bottom = 0
         for (el in elements) {
-            val elBottom = el.dotY + el.dotH
+            val elBottom = if (landscape) el.dotY + el.dotW else el.dotY + el.dotH
             if (elBottom > bottom) bottom = elBottom
         }
         val fitted = if (bottom > 0) bottom + CANVAS_BOTTOM_PAD else 0
@@ -148,20 +150,25 @@ data class CanvasDoc(
 
     /**
      * 内容实际高度（点）：最靠下元素的底边 + 留白，**不含最小长度**。
+     *
+     * 横排时元素内容预旋转 270°，在竖排画布上的纵向占用是 dotW 而非 dotH。
      */
     fun contentHeight(): Int {
         var bottom = 0
         for (el in elements) {
-            val elBottom = el.dotY + el.dotH
+            val elBottom = if (landscape) el.dotY + el.dotW else el.dotY + el.dotH
             if (elBottom > bottom) bottom = elBottom
         }
         return if (bottom > 0) minOf(MAX_CANVAS_HEIGHT, bottom + CANVAS_BOTTOM_PAD) else 0
     }
 
+    /**
+     * 横排时元素内容预旋转 270°，纵向占用是 dotW 而非 dotH。
+     */
     fun overflowed(): Boolean {
         var bottom = 0
         for (el in elements) {
-            val elBottom = el.dotY + el.dotH
+            val elBottom = if (landscape) el.dotY + el.dotW else el.dotY + el.dotH
             if (elBottom > bottom) bottom = elBottom
         }
         return bottom + CANVAS_BOTTOM_PAD > MAX_CANVAS_HEIGHT
@@ -172,7 +179,8 @@ data class CanvasDoc(
 fun nextInsertY(doc: CanvasDoc): Int {
     var bottom = 0
     for (el in doc.elements) {
-        val elBottom = el.dotY + el.dotH
+        // 横排时元素预旋转 270°，纵向占用是 dotW 而非 dotH
+        val elBottom = if (doc.landscape) el.dotY + el.dotW else el.dotY + el.dotH
         if (elBottom > bottom) bottom = elBottom
     }
     return if (bottom > 0) bottom + 8 else 8

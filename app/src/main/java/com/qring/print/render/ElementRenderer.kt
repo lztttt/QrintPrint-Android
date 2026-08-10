@@ -282,11 +282,21 @@ fun composeCanvas(doc: CanvasDoc): CanvasComposite {
         val h = maxOf(1, el.dotH)
         val rows = minOf(h, bits.size / w)
         if (rows <= 0) continue
-        blitBinary(canvas, WIDTH_DOTS, height, bits, w, rows, el.dotX, el.dotY)
+        if (doc.landscape) {
+            // 横排：先把元素二值图逆时针旋转 270°（=90° CCW），
+            // 这样画布整体顺时针旋转 90° 后，元素内容恢复正立（270+90=360°）
+            // 预旋转后宽高互换：新宽=h，新高=w
+            val (rotBits, rw, rh) = rotateBinary(bits, w, rows, 270)
+            val actualRows = minOf(rh, rotBits.size / rw)
+            blitBinary(canvas, WIDTH_DOTS, height, rotBits, rw, actualRows, el.dotX, el.dotY)
+        } else {
+            blitBinary(canvas, WIDTH_DOTS, height, bits, w, rows, el.dotX, el.dotY)
+        }
     }
 
     Timber.tag(TAG).d("composed ${doc.elements.size} elements, height $height, landscape=${doc.landscape}")
-    // 横排：整幅旋转 90°，宽高互换
+    // 横排：整幅旋转 90°，宽高互换（H×384），用于屏幕预览
+    // 打印时由调用方再旋转 90° CW 得到 384×H 送打印机
     return if (doc.landscape) {
         val (rot, nw, nh) = rotateBinary(canvas, WIDTH_DOTS, height, 90)
         CanvasComposite(rot, nw, nh)
@@ -307,6 +317,23 @@ fun compositeToBitmap(composite: CanvasComposite): Bitmap {
  */
 fun compositeToRaster(composite: CanvasComposite): RasterData {
     return packBinaryToRasterArbitrary(composite.binary, composite.width, composite.height)
+}
+
+/**
+ * 合成图 → 打印用光栅数据。
+ * 横排时把 H×384 的合成图再旋转 90° CW → 384×H，
+ * 确保打印机收到标准的 48 字节/行（384 点宽）数据。
+ * 竖排时直接打包。
+ */
+fun compositeToPrintRaster(doc: CanvasDoc, composite: CanvasComposite): RasterData {
+    return if (doc.landscape) {
+        // 横排：合成图是 H×384（宽×高），旋转 90° CW → 384×H（宽×高）
+        // 打印头固定 384 点宽，旋转后宽度正好匹配
+        val (rot, nw, nh) = rotateBinary(composite.binary, composite.width, composite.height, 90)
+        packBinaryToRaster(rot, nw, nh)
+    } else {
+        packBinaryToRaster(composite.binary, composite.width, composite.height)
+    }
 }
 
 // ── 模板序列化 ──────────────────────────────────────────────

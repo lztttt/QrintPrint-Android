@@ -26,7 +26,7 @@ import com.qring.print.render.DEFAULT_CODE_2D_SIZE
 import com.qring.print.render.DEFAULT_IMAGE_WIDTH
 import com.qring.print.render.codeOneDAspect
 import com.qring.print.render.compositeToBitmap
-import com.qring.print.render.compositeToRaster
+import com.qring.print.render.compositeToPrintRaster
 import com.qring.print.render.composeCanvas
 import com.qring.print.render.loadImageGray
 import com.qring.print.render.renderElementNow
@@ -223,9 +223,9 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         val doc = _uiState.value.doc
         val sel = doc.selected() ?: return
         if (doc.landscape) {
-            // 横排：dotX 方向限制在 0..384（即打印宽度方向），dotY 方向可无限延伸
-            // 注意 dotW 可能 > 384，此时范围会为空，用 maxOf 保证 max >= 0
-            val maxX = maxOf(0, 384 - sel.dotW)
+            // 横排：dotX 方向限制在 0..384（打印宽度方向），dotY 方向可无限延伸
+            // 元素内容预旋转后正立，纵向占用是 dotH（而非 dotW）
+            val maxX = maxOf(0, 384 - sel.dotH)
             sel.dotX = (sel.dotX + dx).coerceIn(0, maxX)
             sel.dotY = sel.dotY + dy
         } else {
@@ -598,9 +598,11 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
 
                 val result = withContext(Dispatchers.Default) {
                     val composite = composeCanvas(_uiState.value.doc)
-                    val raster = compositeToRaster(composite)
+                    // 横排时 compositeToPrintRaster 会把 H×384 再旋转 90° CW → 384×H
+                    // 确保打印机收到标准的 48 字节/行数据
+                    val raster = compositeToPrintRaster(_uiState.value.doc, composite)
 
-                    // 生成缩略图
+                    // 生成缩略图（用原始合成图，保持横排预览方向）
                     val fullBmp = compositeToBitmap(composite)
                     val thumbBmp = Bitmap.createScaledBitmap(fullBmp, 200, Math.round(200f * fullBmp.height / fullBmp.width), true)
 
@@ -680,7 +682,8 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
 private fun nextInsertY(doc: CanvasDoc): Int {
     var bottom = 0
     for (el in doc.elements) {
-        val elBottom = el.dotY + el.dotH
+        // 横排时元素预旋转 270°，纵向占用是 dotW 而非 dotH
+        val elBottom = if (doc.landscape) el.dotY + el.dotW else el.dotY + el.dotH
         if (elBottom > bottom) bottom = elBottom
     }
     return if (bottom > 0) bottom + 8 else 8

@@ -175,11 +175,12 @@ fun CanvasView(
                     val boxW: Int
                     val boxH: Int
                     if (landscape) {
-                        // 横排：用固定 refW 做参考，dotY 变化时 boxX 真正变化
-                        boxX = refW - el.dotY - el.dotH
+                        // 横排：元素内容已预旋转 270°，画布旋转 90° 后内容正立
+                        // 视觉尺寸 = (dotW, dotH)，位置 = (refW - dotY - dotW, dotX)
+                        boxX = refW - el.dotY - el.dotW
                         boxY = el.dotX
-                        boxW = el.dotH
-                        boxH = el.dotW
+                        boxW = el.dotW
+                        boxH = el.dotH
                     } else {
                         boxX = el.dotX
                         boxY = el.dotY
