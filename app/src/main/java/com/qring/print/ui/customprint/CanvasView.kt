@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,6 +18,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,6 +42,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,48 +90,77 @@ fun CanvasView(
     modifier: Modifier = Modifier
 ) {
     // scale 始终基于 384（打印机宽度），不随 contentHeight 变化
-    // 这样横排时画布高度固定、元素不会因拖拽而缩放
     val scale = canvasWidthDp / 384f
 
-    // 横排时 bitmap 宽度 = contentHeight（动态变化），需要独立的 xScale
     val bmpW = compositeBitmap?.width ?: 384
     val bmpH = compositeBitmap?.height ?: 384
-    val xScale = if (landscape) canvasWidthDp / maxOf(1, bmpW) else scale
+
+    // 横排时使用稳定参考宽度：只增不减，避免拖拽中 contentHeight 变化导致元素不动
+    // landscape 变化时重置
+    var refW by remember(landscape) { mutableStateOf(bmpW) }
+    if (bmpW > refW) refW = bmpW
 
     // 用 rememberUpdatedState 拿到最新的值，避免 pointerInput 重启
     val currentScale by rememberUpdatedState(scale)
-    val currentXScale by rememberUpdatedState(xScale)
     val currentLandscape by rememberUpdatedState(landscape)
 
     // Box 高度：横排固定为 384*scale，竖排跟随内容
     val boxHeightDp = if (landscape) (384 * scale) else (bmpH * scale)
 
-    Box(
-        modifier = modifier
+    // 横排时内容宽度 = refW * scale，需要水平滚动
+    val landscapeScroll = rememberScrollState()
+    // 自动滚动到最右侧（内容所在位置）
+    LaunchedEffect(refW, landscape) {
+        if (landscape) {
+            landscapeScroll.scrollTo(refW * scale.toInt())
+        }
+    }
+
+    val baseModifier = if (landscape) {
+        modifier
+            .fillMaxWidth()
+            .height(boxHeightDp.dp)
+            .horizontalScroll(landscapeScroll)
+            .clip(RoundedCornerShape(12.dp))
+            .background(QringPalette.paper)
+            .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(12.dp))
+    } else {
+        modifier
             .fillMaxWidth()
             .height(boxHeightDp.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(QringPalette.paper)
             .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(12.dp))
-    ) {
-        // 合成图：横排时拉伸填满整个 Box 宽度（FillBounds），竖排时按实际尺寸显示
-        if (compositeBitmap != null) {
-            if (landscape) {
-                Image(
-                    bitmap = compositeBitmap.asImageBitmap(),
-                    contentDescription = "画布预览",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillBounds
-                )
-            } else {
-                Image(
-                    bitmap = compositeBitmap.asImageBitmap(),
-                    contentDescription = "画布预览",
-                    modifier = Modifier.fillMaxWidth(),
-                    contentScale = ContentScale.FillWidth
-                )
+    }
+
+    Box(modifier = baseModifier) {
+        // 横排时内容区域宽度 = refW * scale，竖排填满宽度
+        val contentWidthDp = if (landscape) (refW * scale) else canvasWidthDp
+
+        Box(modifier = Modifier.width(contentWidthDp.dp).height(boxHeightDp.dp)) {
+            // 合成图
+            if (compositeBitmap != null) {
+                if (landscape) {
+                    // 横排：bitmap 右对齐（dotY=0 在右侧）
+                    val bmpOffsetX = (refW - bmpW) * scale
+                    Image(
+                        bitmap = compositeBitmap.asImageBitmap(),
+                        contentDescription = "画布预览",
+                        modifier = Modifier
+                            .offset(x = bmpOffsetX.dp)
+                            .width((bmpW * scale).dp)
+                            .height((bmpH * scale).dp),
+                        contentScale = ContentScale.FillBounds
+                    )
+                } else {
+                    Image(
+                        bitmap = compositeBitmap.asImageBitmap(),
+                        contentDescription = "画布预览",
+                        modifier = Modifier.fillMaxWidth(),
+                        contentScale = ContentScale.FillWidth
+                    )
+                }
             }
-        }
 
         // 元素选择框（统一用 dp：offset 与 size 单位一致，保证选框和预览对齐）
         elements.forEach { el ->
@@ -138,9 +171,8 @@ fun CanvasView(
             val boxW: Int
             val boxH: Int
             if (landscape) {
-                // 横排：X 方向用 xScale（随 contentHeight 变化），Y 方向用 scale（固定 384 基准）
-                val h = bmpW
-                boxX = h - el.dotY - el.dotH
+                // 横排：用固定 refW 做参考，dotY 变化时 boxX 真正变化
+                boxX = refW - el.dotY - el.dotH
                 boxY = el.dotX
                 boxW = el.dotH
                 boxH = el.dotW
@@ -150,10 +182,10 @@ fun CanvasView(
                 boxW = el.dotW
                 boxH = el.dotH
             }
-            // 横排时 X 方向用 xScale，Y 方向用 scale；竖排统一用 scale
-            val xDp = (if (landscape) boxX * xScale else boxX * scale).dp
+            // 统一用 scale（固定 384 基准），横排和竖排一致，元素不拉伸
+            val xDp = (boxX * scale).dp
             val yDp = (boxY * scale).dp
-            val wDp = (if (landscape) boxW * xScale else boxW * scale).dp
+            val wDp = (boxW * scale).dp
             val hDp = (boxH * scale).dp
 
             Box(
@@ -172,8 +204,7 @@ fun CanvasView(
                             Modifier.pointerInput(el.id, landscape) {
                                 detectDragGestures { change, dragAmount ->
                                     change.consume()
-                                    // 横排时 X 方向用 currentXScale，Y 方向用 currentScale
-                                    val dxDot = (dragAmount.x / if (currentLandscape) currentXScale else currentScale).roundToInt()
+                                    val dxDot = (dragAmount.x / currentScale).roundToInt()
                                     val dyDot = (dragAmount.y / currentScale).roundToInt()
                                     if (dxDot != 0 || dyDot != 0) {
                                         if (currentLandscape) {
@@ -201,7 +232,8 @@ fun CanvasView(
                 }
             }
         }
-    }
+        }  // 内层 Box
+    }  // 外层 Box
 }
 
 /**
