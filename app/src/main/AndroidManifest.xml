@@ -21,6 +21,10 @@
     <!-- Photo picker -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
+    <!-- Calendar -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+
     <!-- Bluetooth feature -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
 

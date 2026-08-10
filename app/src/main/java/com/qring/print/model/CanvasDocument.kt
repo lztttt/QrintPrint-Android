@@ -62,10 +62,17 @@ data class CanvasElement(
     // 图片元素
     var imageUri: String = "",
     var ditherMode: DitherMode = DitherMode.FLOYD_STEINBERG,
+    var ditherThreshold: Int = 128,
     var sourceGray: GrayImage? = null,
     // 条码元素
     var codeContent: String = "",
-    var codeTypeIndex: Int = 0
+    var codeTypeIndex: Int = 0,
+    // 元素旋转角度：0 / 90 / 180 / 270
+    var rotation: Int = 0,
+    // 水平翻转
+    var flipH: Boolean = false,
+    // 垂直翻转
+    var flipV: Boolean = false
 ) {
     fun release() {
         preview?.recycle()
@@ -79,7 +86,9 @@ data class CanvasElement(
 data class CanvasDoc(
     var elements: MutableList<CanvasElement> = mutableListOf(),
     var minLength: Int = 200,
-    var selectedId: String = ""
+    var selectedId: String = "",
+    /** true = 横排（内容旋转 90° 打印） */
+    var landscape: Boolean = false
 ) {
     fun add(element: CanvasElement) {
         elements = (elements + element).toMutableList()

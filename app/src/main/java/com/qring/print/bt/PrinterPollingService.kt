@@ -40,9 +40,15 @@ class PrinterPollingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification())
-        startPolling()
-        return START_NOT_STICKY
+        return try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+            startPolling()
+            START_NOT_STICKY
+        } catch (e: Exception) {
+            Timber.w(e, "startForeground failed, skip service")
+            stopSelf()
+            START_NOT_STICKY
+        }
     }
 
     override fun onDestroy() {

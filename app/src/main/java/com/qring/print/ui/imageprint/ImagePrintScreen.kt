@@ -6,8 +6,8 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,9 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -36,15 +34,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -59,12 +55,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.qring.print.MainViewModel
 import com.qring.print.R
 import com.qring.print.model.ConnState
 import com.qring.print.protocol.DITHER_OPTIONS
 import com.qring.print.protocol.DitherMode
-import com.qring.print.ui.theme.BRAND
 import com.qring.print.ui.theme.Metrics
 import com.qring.print.ui.theme.ONLINE
 import com.qring.print.ui.theme.QringPalette
@@ -88,6 +82,13 @@ fun ImagePrintScreen(
         }
     }
 
+    // 切换抖动算法 / 阈值后实时重渲染
+    LaunchedEffect(uiState.ditherMode, uiState.threshold) {
+        if (uiState.sourceGray != null) {
+            viewModel.reRender()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -107,165 +108,165 @@ fun ImagePrintScreen(
             )
         )
 
+        // 顶部：实时预览卡片
+        PreviewCard(
+            preview = uiState.previewBitmap,
+            hasImage = uiState.imageUri.isNotEmpty(),
+            busy = uiState.busy,
+            ditherMode = uiState.ditherMode,
+            threshold = uiState.threshold,
+            onPick = {
+                photoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            }
+        )
+
+        // 中间：设置（可滚动）
         Column(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = Metrics.PAGE_PADDING.dp)
-                .padding(bottom = 16.dp)
+                .padding(top = 12.dp, bottom = 12.dp)
         ) {
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 连接状态
             ConnectionBanner(printerStatus = printerStatus)
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 选图区域
-            ImagePickerArea(
-                hasImage = uiState.imageUri.isNotEmpty(),
-                busy = uiState.busy,
-                onPick = {
-                    photoPickerLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                    )
-                }
-            )
-
             if (uiState.imageUri.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // 抖动模式选择
+                // 抖动算法
                 DitherSelector(
                     selectedMode = uiState.ditherMode,
-                    onModeChange = { viewModel.reRenderWithDither(it) },
+                    onModeChange = viewModel::setDitherMode,
                     enabled = !uiState.busy && !uiState.printing
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // 浓度调节
+                // 阈值
+                SliderRow(
+                    label = "阈值",
+                    value = uiState.threshold.toFloat(),
+                    min = 0f,
+                    max = 255f,
+                    suffix = "",
+                    valueText = uiState.threshold.toString(),
+                    onValueChange = { viewModel.setThreshold(Math.round(it)) },
+                    enabled = !uiState.busy && !uiState.printing
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 浓度
                 ThicknessSlider(
                     thickness = uiState.thickness,
                     onThicknessChange = viewModel::setThickness,
                     enabled = !uiState.printing
                 )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // 操作按钮
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Button(
-                        onClick = { /* Preview shown automatically after decode */ },
-                        enabled = !uiState.printing && !uiState.busy && uiState.sourceGray != null,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = QringPalette.surfaceSunken,
-                            contentColor = QringPalette.textPrimary
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("预览")
-                    }
-
-                    Button(
-                        onClick = viewModel::print,
-                        enabled = !uiState.printing && !uiState.busy && uiState.sourceGray != null,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = BRAND),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        if (uiState.printing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                color = Color.White,
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(stringResource(R.string.print))
-                    }
-                }
-            }
-
-            // 结果提示
-            if (uiState.resultMessage.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
+            } else {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (uiState.resultOk)
-                            ONLINE.copy(alpha = 0.1f)
-                        else
-                            Color(0xFFFF4D4F).copy(alpha = 0.1f)
-                    ),
+                    colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
-                        text = uiState.resultMessage,
-                        modifier = Modifier.padding(12.dp),
-                        color = if (uiState.resultOk) ONLINE else Color(0xFFFF4D4F),
-                        fontSize = 14.sp
+                        text = "点击上方卡片选择一张图片",
+                        modifier = Modifier.padding(16.dp),
+                        color = QringPalette.textSecondary,
+                        fontSize = 13.sp
                     )
                 }
             }
         }
-    }
 
-    // 预览弹窗
-    if (uiState.showPreview && uiState.previewBitmap != null) {
-        ImagePreviewSheet(
-            bitmap = uiState.previewBitmap!!,
-            onDismiss = viewModel::dismissPreview
+        // 底部：操作按键
+        BottomActionBar(
+            printing = uiState.printing,
+            canPrint = uiState.sourceGray != null,
+            resultMessage = uiState.resultMessage,
+            resultOk = uiState.resultOk,
+            onPrint = viewModel::print
         )
     }
 }
 
 @Composable
-private fun ImagePickerArea(
+private fun PreviewCard(
+    preview: android.graphics.Bitmap?,
     hasImage: Boolean,
     busy: Boolean,
+    ditherMode: DitherMode,
+    threshold: Int,
     onPick: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(200.dp)
+            .padding(horizontal = Metrics.PAGE_PADDING.dp)
+            .padding(top = 12.dp)
             .clickable(enabled = !busy, onClick = onPick),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = QringPalette.surface)
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(14.dp)
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
         ) {
-            if (busy) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = BRAND)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("处理中…", color = QringPalette.textSecondary, fontSize = 14.sp)
-                }
-            } else {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.AddPhotoAlternate,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = BRAND
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = if (hasImage) "点击更换图片" else "点击选择图片",
-                        color = QringPalette.textSecondary,
-                        fontSize = 14.sp
-                    )
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = when {
+                        busy -> "正在处理…"
+                        preview != null ->
+                            "宽 ${preview.width} 点(${String.format("%.1f", preview.width / 8.0)}mm) × 高 ${preview.height} 点(${String.format("%.1f", preview.height / 8.0)}mm) · ${ditherMode.label()} · 阈值 $threshold"
+                        hasImage -> "渲染预览…"
+                        else -> "点击选择图片"
+                    },
+                    fontSize = 11.sp,
+                    color = QringPalette.textSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.Default.AddPhotoAlternate,
+                    contentDescription = "选择图片",
+                    tint = QringPalette.brand,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.White)
+            ) {
+                when {
+                    preview != null -> {
+                        Image(
+                            bitmap = preview.asImageBitmap(),
+                            contentDescription = "打印预览",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                            contentScale = ContentScale.FillWidth
+                        )
+                    }
+                    busy -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center),
+                            color = QringPalette.brand
+                        )
+                    }
+                    else -> {
+                        Text(
+                            text = "点击选择图片",
+                            color = QringPalette.textSecondary,
+                            fontSize = 13.sp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
                 }
             }
         }
@@ -285,44 +286,81 @@ private fun DitherSelector(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "抖动模式",
+                text = "抖动算法",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
                 color = QringPalette.textPrimary
             )
             Spacer(modifier = Modifier.height(8.dp))
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 DITHER_OPTIONS.forEach { option ->
                     val active = option.mode == selectedMode
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(if (active) BRAND else QringPalette.surfaceSunken)
+                            .background(if (active) QringPalette.brand else QringPalette.surfaceSunken)
                             .clickable(enabled = enabled) { onModeChange(option.mode) }
-                            .padding(8.dp),
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = option.label,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = if (active) Color.White else QringPalette.textPrimary
-                            )
-                            Text(
-                                text = option.hint.split(" · ").getOrNull(0) ?: "",
-                                fontSize = 10.sp,
-                                color = if (active) Color.White.copy(alpha = 0.8f) else QringPalette.textSecondary
-                            )
-                        }
+                        Text(
+                            text = option.label,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = if (active) Color.White else QringPalette.textPrimary
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SliderRow(
+    label: String,
+    value: Float,
+    min: Float,
+    max: Float,
+    suffix: String,
+    valueText: String,
+    onValueChange: (Float) -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = label,
+                    fontSize = 13.sp,
+                    color = QringPalette.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (suffix.isEmpty()) valueText else "$valueText$suffix",
+                    fontSize = 13.sp,
+                    color = QringPalette.textSecondary
+                )
+            }
+            Slider(
+                value = value,
+                onValueChange = onValueChange,
+                valueRange = min..max,
+                enabled = enabled,
+                colors = SliderDefaults.colors(
+thumbColor = QringPalette.brand,
+activeTrackColor = QringPalette.brand
+                )
+            )
         }
     }
 }
@@ -342,8 +380,7 @@ private fun ThicknessSlider(
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text(
                     text = "打印浓度",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.sp,
                     color = QringPalette.textPrimary,
                     modifier = Modifier.weight(1f)
                 )
@@ -363,49 +400,76 @@ private fun ThicknessSlider(
                 steps = 4,
                 enabled = enabled,
                 colors = SliderDefaults.colors(
-                    thumbColor = BRAND,
-                    activeTrackColor = BRAND
+thumbColor = QringPalette.brand,
+activeTrackColor = QringPalette.brand
                 )
             )
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ImagePreviewSheet(
-    bitmap: android.graphics.Bitmap,
-    onDismiss: () -> Unit
+private fun BottomActionBar(
+    printing: Boolean,
+    canPrint: Boolean,
+    resultMessage: String,
+    resultOk: Boolean,
+    onPrint: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState()
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = QringPalette.pageBg
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(QringPalette.surface)
+            .padding(horizontal = Metrics.PAGE_PADDING.dp)
+            .padding(top = 10.dp, bottom = 16.dp)
     ) {
-        Column(
+        if (resultMessage.isNotEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (resultOk)
+                        ONLINE.copy(alpha = 0.1f)
+                    else
+                        Color(0xFFFF4D4F).copy(alpha = 0.1f)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    text = resultMessage,
+                    modifier = Modifier.padding(12.dp),
+                    color = if (resultOk) ONLINE else Color(0xFFFF4D4F),
+                    fontSize = 14.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        Button(
+            onClick = onPrint,
+            enabled = !printing && canPrint,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
-                .padding(bottom = 24.dp)
+                .height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = QringPalette.brand),
+            shape = RoundedCornerShape(12.dp)
         ) {
-            Text(
-                text = "纸宽 384 点 · 打印预览",
-                fontSize = 12.sp,
-                color = QringPalette.textSecondary
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "预览",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.White)
-                    .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.FillWidth
-            )
+            if (printing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("打印中…", fontSize = 15.sp)
+            } else {
+                Icon(
+                    Icons.Default.Print,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(stringResource(R.string.print), fontSize = 16.sp)
+            }
         }
     }
 }
@@ -441,3 +505,6 @@ private fun ConnectionBanner(printerStatus: com.qring.print.model.PrinterStatus)
         }
     }
 }
+
+private fun DitherMode.label(): String =
+    DITHER_OPTIONS.firstOrNull { it.mode == this }?.label ?: "无"

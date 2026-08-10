@@ -8,16 +8,17 @@ import androidx.lifecycle.viewModelScope
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
+import com.google.zxing.common.BitMatrix
 import com.qring.print.bt.PrinterConnection
+import com.qring.print.data.HistoryPayloadHolder
 import com.qring.print.data.HistoryRepository
 import com.qring.print.model.ConnState
 import com.qring.print.model.HIST_TYPE_CODE
 import com.qring.print.model.PrinterStatus
-import com.qring.print.model.PrinterStatus
 import com.qring.print.model.PrinterStatusRepository
 import com.qring.print.protocol.RasterData
 import com.qring.print.protocol.WIDTH_DOTS
-import com.qring.print.protocol.bitmapToPreviewBitmap
+import com.qring.print.protocol.binaryToPreviewBitmap
 import com.qring.print.protocol.bitmapToRaster
 import com.qring.print.protocol.ditherToBinary
 import com.qring.print.protocol.GrayImage
@@ -26,11 +27,13 @@ import com.qring.print.protocol.packBinaryToRaster
 import com.qring.print.protocol.scaleGrayNearest
 import com.qring.print.protocol.squeezeRows
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 data class CodePrintUiState(
     val content: String = "",
@@ -72,7 +75,7 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                 codeTypeIndex = codeTypeIndex
             )
             if (content.isNotEmpty()) {
-                generateAndPreview()
+                updatePreview()
             }
         } catch (e: Exception) { }
     }
@@ -85,85 +88,85 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(codeTypeIndex = index)
     }
 
+    /** 码制对应的 ZXing 格式 */
+    private fun formatFor(codeTypeIndex: Int): BarcodeFormat {
+        val label = com.qring.print.model.CODE_TYPES.getOrNull(codeTypeIndex)?.label ?: "QR Code"
+        return when (label) {
+            "QR Code" -> BarcodeFormat.QR_CODE
+            "Data Matrix" -> BarcodeFormat.DATA_MATRIX
+            "Aztec" -> BarcodeFormat.AZTEC
+            "PDF417" -> BarcodeFormat.PDF_417
+            "Code 128" -> BarcodeFormat.CODE_128
+            "Code 39" -> BarcodeFormat.CODE_39
+            "Code 93" -> BarcodeFormat.CODE_93
+            "EAN-13" -> BarcodeFormat.EAN_13
+            "EAN-8" -> BarcodeFormat.EAN_8
+            "UPC-A" -> BarcodeFormat.UPC_A
+            "ITF" -> BarcodeFormat.ITF
+            else -> BarcodeFormat.QR_CODE
+        }
+    }
+
+    private fun isOneD(codeTypeIndex: Int): Boolean =
+        com.qring.print.model.CODE_TYPES.getOrNull(codeTypeIndex)?.category == com.qring.print.model.CodeCategory.ONE_D
+
     /**
-     * 生成条码并预览。
-     * 使用 ZXing MultiFormatWriter 生成条码位图，然后缩放、二值化、生成预览。
+     * 把内容渲染成 384 点宽的条码灰度 + 二值，返回 (binary, gray)。内容为空返回 null。
      */
-    fun generateAndPreview() {
+    private fun renderCode(state: CodePrintUiState): Pair<ByteArray, GrayImage>? {
+        if (state.content.isEmpty()) return null
+        val format = formatFor(state.codeTypeIndex)
+        val size = 384
+        val hints = mapOf(
+            EncodeHintType.MARGIN to 2,
+            EncodeHintType.CHARACTER_SET to "UTF-8"
+        )
+        val bitMatrix: BitMatrix = MultiFormatWriter().encode(
+            state.content, format, size, size, hints
+        )
+        val grayData = IntArray(size * size)
+        for (y in 0 until size) {
+            for (x in 0 until size) {
+                grayData[y * size + x] = if (bitMatrix.get(x, y)) 0 else 255
+            }
+        }
+        var gray = GrayImage(grayData, size, size)
+        // 一维码压扁
+        if (isOneD(state.codeTypeIndex)) {
+            gray = squeezeRows(gray, 140)
+        }
+        // 缩放到目标尺寸
+        val targetW = if (isOneD(state.codeTypeIndex)) 280 else 160
+        val targetH = if (isOneD(state.codeTypeIndex)) 140 else 160
+        val scaled = scaleGrayNearest(gray, targetW, targetH)
+        // 纯阈值，不抖动
+        val binary = ditherToBinary(scaled, DitherMode.NONE, 128)
+        return Pair(binary, scaled)
+    }
+
+    /** 实时预览：内容/码制变化时调用 */
+    fun updatePreview() {
         val state = _uiState.value
         if (state.content.isEmpty()) {
-            _uiState.value = _uiState.value.copy(
-                resultOk = false,
-                resultMessage = "请输入条码内容"
-            )
+            val old = _uiState.value.previewBitmap
+            if (old != null) {
+                _uiState.value = _uiState.value.copy(previewBitmap = null)
+                old.recycle()
+            }
             return
         }
-
-        _uiState.value = _uiState.value.copy(busy = true, resultMessage = "")
-
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.Default) {
-                    val codeType = com.qring.print.model.CODE_TYPES[state.codeTypeIndex]
-                    val format = when (codeType.label) {
-                        "QR Code" -> BarcodeFormat.QR_CODE
-                        "Data Matrix" -> BarcodeFormat.DATA_MATRIX
-                        "Aztec" -> BarcodeFormat.AZTEC
-                        "PDF417" -> BarcodeFormat.PDF_417
-                        "Code 128" -> BarcodeFormat.CODE_128
-                        "Code 39" -> BarcodeFormat.CODE_39
-                        "Code 93" -> BarcodeFormat.CODE_93
-                        "EAN-13" -> BarcodeFormat.EAN_13
-                        "EAN-8" -> BarcodeFormat.EAN_8
-                        "UPC-A" -> BarcodeFormat.UPC_A
-                        "ITF" -> BarcodeFormat.ITF
-                        else -> BarcodeFormat.QR_CODE
-                    }
-
-                    // 生成条码位图（384x384）
-                    val size = 384
-                    val hints = mapOf(
-                        EncodeHintType.MARGIN to 2,
-                        EncodeHintType.CHARACTER_SET to "UTF-8"
-                    )
-                    val bitMatrix: BitMatrix = MultiFormatWriter().encode(
-                        state.content, format, size, size, hints
-                    )
-
-                    // BitMatrix -> GrayImage
-                    val grayData = IntArray(size * size)
-                    for (y in 0 until size) {
-                        for (x in 0 until size) {
-                            grayData[y * size + x] = if (bitMatrix.get(x, y)) 0 else 255
-                        }
-                    }
-                    var gray = GrayImage(grayData, size, size)
-
-                    // 一维码压扁
-                    if (codeType.category == com.qring.print.model.CodeCategory.ONE_D) {
-                        gray = squeezeRows(gray, 140)
-                    }
-
-                    // 缩放到目标尺寸（二维码 160px，一维码 280x140）
-                    val targetW = if (codeType.category == com.qring.print.model.CodeCategory.ONE_D) 280 else 160
-                    val targetH = if (codeType.category == com.qring.print.model.CodeCategory.ONE_D) 140 else 160
-                    val scaled = scaleGrayNearest(gray, targetW, targetH)
-
-                    // 二值化（纯阈值，不抖动）
-                    val binary = ditherToBinary(scaled, DitherMode.NONE, 128)
-
-                    // 生成预览位图
-                    val preview = binaryToPreviewBitmap(binary, scaled.width, scaled.height, false)
-
-                    _uiState.value = _uiState.value.copy(
-                        previewBitmap = preview,
-                        showPreview = true,
-                        busy = false
-                    )
-                }
+                val old = _uiState.value.previewBitmap
+                val preview = withContext(Dispatchers.Default) {
+                    val result = renderCode(_uiState.value) ?: return@withContext null
+                    binaryToPreviewBitmap(result.first, result.second.width, result.second.height, false)
+                } ?: return@launch
+                _uiState.value = _uiState.value.copy(previewBitmap = preview)
+                // 等当前帧画完旧位图再回收
+                old?.let { if (it != preview) { delay(150); it.recycle() } }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
-                    busy = false,
                     resultOk = false,
                     resultMessage = "条码生成失败：${e.message}"
                 )
@@ -181,10 +184,10 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
             )
             return
         }
-        if (state.previewBitmap == null) {
+        if (state.content.isEmpty()) {
             _uiState.value = _uiState.value.copy(
                 resultOk = false,
-                resultMessage = "请先生成条码"
+                resultMessage = "请输入条码内容"
             )
             return
         }
@@ -206,49 +209,10 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                     return@launch
                 }
 
-                // 重新生成并打印（预览位图不适合直接打印，需要重新走管线）
+                // 重新生成并打印
                 val result = withContext(Dispatchers.Default) {
-                    val codeType = com.qring.print.model.CODE_TYPES[state.codeTypeIndex]
-                    val format = when (codeType.label) {
-                        "QR Code" -> BarcodeFormat.QR_CODE
-                        "Data Matrix" -> BarcodeFormat.DATA_MATRIX
-                        "Aztec" -> BarcodeFormat.AZTEC
-                        "PDF417" -> BarcodeFormat.PDF_417
-                        "Code 128" -> BarcodeFormat.CODE_128
-                        "Code 39" -> BarcodeFormat.CODE_39
-                        "Code 93" -> BarcodeFormat.CODE_93
-                        "EAN-13" -> BarcodeFormat.EAN_13
-                        "EAN-8" -> BarcodeFormat.EAN_8
-                        "UPC-A" -> BarcodeFormat.UPC_A
-                        "ITF" -> BarcodeFormat.ITF
-                        else -> BarcodeFormat.QR_CODE
-                    }
-
-                    val size = 384
-                    val hints = mapOf(
-                        EncodeHintType.MARGIN to 2,
-                        EncodeHintType.CHARACTER_SET to "UTF-8"
-                    )
-                    val bitMatrix: BitMatrix = MultiFormatWriter().encode(
-                        state.content, format, size, size, hints
-                    )
-
-                    val grayData = IntArray(size * size)
-                    for (y in 0 until size) {
-                        for (x in 0 until size) {
-                            grayData[y * size + x] = if (bitMatrix.get(x, y)) 0 else 255
-                        }
-                    }
-                    var gray = GrayImage(grayData, size, size)
-
-                    if (codeType.category == com.qring.print.model.CodeCategory.ONE_D) {
-                        gray = squeezeRows(gray, 140)
-                    }
-
-                    val targetW = if (codeType.category == com.qring.print.model.CodeCategory.ONE_D) 280 else 160
-                    val targetH = if (codeType.category == com.qring.print.model.CodeCategory.ONE_D) 140 else 160
-                    val scaled = scaleGrayNearest(gray, targetW, targetH)
-                    val binary = ditherToBinary(scaled, DitherMode.NONE, 128)
+                    val r = renderCode(_uiState.value) ?: return@withContext null
+                    val (binary, scaled) = r
                     val raster = packBinaryToRaster(binary, scaled.width, scaled.height)
 
                     // 生成缩略图
@@ -263,8 +227,8 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                     if (printResult.ok) {
                         try {
                             val payload = org.json.JSONObject().apply {
-                                put("content", state.content)
-                                put("codeTypeIndex", state.codeTypeIndex)
+                                put("content", _uiState.value.content)
+                                put("codeTypeIndex", _uiState.value.codeTypeIndex)
                             }.toString()
                             historyRepo.saveHistory(HIST_TYPE_CODE, thumbBmp, payload)
                         } catch (e: Exception) { }
@@ -276,8 +240,8 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
 
                 _uiState.value = _uiState.value.copy(
                     printing = false,
-                    resultOk = result.ok,
-                    resultMessage = result.message
+                    resultOk = result?.ok ?: false,
+                    resultMessage = result?.message ?: "请输入条码内容"
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -290,9 +254,7 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun dismissPreview() {
-        val old = _uiState.value.previewBitmap
-        _uiState.value = _uiState.value.copy(showPreview = false, previewBitmap = null)
-        old?.recycle()
+        _uiState.value = _uiState.value.copy(showPreview = false)
     }
 
     fun clearResult() {

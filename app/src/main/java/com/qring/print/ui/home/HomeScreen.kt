@@ -23,10 +23,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -55,14 +58,10 @@ import com.qring.print.MainViewModel
 import com.qring.print.R
 import com.qring.print.model.ConnState
 import com.qring.print.ui.navigation.Routes
-import com.qring.print.ui.theme.BRAND
-import com.qring.print.ui.theme.BRAND_PRESSED
-import com.qring.print.ui.theme.CARD_GRAD_END
-import com.qring.print.ui.theme.CARD_GRAD_MID
-import com.qring.print.ui.theme.CARD_GRAD_OFF_END
-import com.qring.print.ui.theme.CARD_GRAD_OFF_START
-import com.qring.print.ui.theme.CARD_GRAD_START
 import com.qring.print.ui.theme.Metrics
+import com.qring.print.ui.theme.ON_CARD_MUTED
+import com.qring.print.ui.theme.ON_CARD_SUBTITLE
+import com.qring.print.ui.theme.ON_CARD_TILE
 import com.qring.print.ui.theme.ONLINE
 import com.qring.print.ui.theme.QringPalette
 import com.qring.print.ui.theme.WARNING
@@ -93,6 +92,8 @@ fun HomeScreen(
             // 打印机状态卡
             PrinterStatusCard(
                 status = printerStatus,
+                alias = if (printerStatus.connState == ConnState.CONNECTED)
+                    viewModel.deviceAlias(printerStatus.deviceId) else null,
                 onClick = { showDevicePicker = true }
             )
 
@@ -113,6 +114,24 @@ fun HomeScreen(
                 onImageClick = { navController.navigate(Routes.IMAGE_PRINT) },
                 onCodeClick = { navController.navigate(Routes.CODE_PRINT) },
                 onCustomClick = { navController.navigate(Routes.CUSTOM_PRINT) }
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "更多功能",
+                style = androidx.compose.material3.MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = QringPalette.textPrimary
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            MoreActionGrid(
+                onScheduleClick = { navController.navigate(Routes.SCHEDULE) },
+                onLabelClick = { navController.navigate(Routes.LABEL) },
+                onCalendarClick = { navController.navigate(Routes.CALENDAR) },
+                onTodoClick = { navController.navigate(Routes.TODO) }
             )
         }
     }
@@ -144,7 +163,7 @@ private fun TopBar() {
             modifier = Modifier
                 .size(Metrics.BRAND_BADGE_SIZE.dp)
                 .clip(RoundedCornerShape(Metrics.BRAND_BADGE_RADIUS.dp))
-                .background(BRAND),
+                .background(QringPalette.brand),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -178,13 +197,14 @@ private fun TopBar() {
 @Composable
 fun PrinterStatusCard(
     status: com.qring.print.model.PrinterStatus,
+    alias: String?,
     onClick: () -> Unit
 ) {
     val connected = status.connState == ConnState.CONNECTED
     val gradient = if (connected) {
-        Brush.linearGradient(listOf(CARD_GRAD_START, CARD_GRAD_MID, CARD_GRAD_END))
+        Brush.linearGradient(listOf(QringPalette.cardGradStart, QringPalette.cardGradMid, QringPalette.cardGradEnd))
     } else {
-        Brush.linearGradient(listOf(CARD_GRAD_OFF_START, CARD_GRAD_OFF_END))
+        Brush.linearGradient(listOf(QringPalette.cardGradOffStart, QringPalette.cardGradOffEnd))
     }
 
     Card(
@@ -204,7 +224,7 @@ fun PrinterStatusCard(
             // 状态信息
             Column {
                 Text(
-                    text = status.deviceName.ifEmpty { "未连接" },
+                    text = (alias ?: status.deviceName).ifEmpty { "未连接" },
                     color = Color.White,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
@@ -212,7 +232,10 @@ fun PrinterStatusCard(
                 )
                 Text(
                     text = when (status.connState) {
-                        ConnState.CONNECTED -> stringResource(R.string.status_connected)
+                        ConnState.CONNECTED -> {
+                            if (alias != null && status.deviceName.isNotEmpty()) status.deviceName
+                            else stringResource(R.string.status_connected)
+                        }
                         ConnState.CONNECTING -> stringResource(R.string.status_connecting)
                         ConnState.DISCONNECTED -> stringResource(R.string.status_disconnected)
                     },
@@ -337,6 +360,95 @@ data class QuickAction(
     val icon: ImageVector,
     val onClick: () -> Unit
 )
+
+// ── 更多功能宫格 ────────────────────────────────────────
+
+@Composable
+fun MoreActionGrid(
+    onScheduleClick: () -> Unit,
+    onLabelClick: () -> Unit,
+    onCalendarClick: () -> Unit,
+    onTodoClick: () -> Unit
+) {
+    val actions = listOf(
+        QuickAction2("schedule", "课程表", "手动编辑课程表", com.qring.print.ui.theme.TILE_MINT, Icons.Default.DateRange, onScheduleClick),
+        QuickAction2("label", "标签纸", "批量标签打印", com.qring.print.ui.theme.TILE_BLUE, Icons.Default.Label, onLabelClick),
+        QuickAction2("calendar", "日程", "系统日程打印", com.qring.print.ui.theme.TILE_LILAC, Icons.Default.GridView, onCalendarClick),
+        QuickAction2("todo", "Todo", "待办事项打印", com.qring.print.ui.theme.TILE_AMBER, Icons.Default.Checklist, onTodoClick),
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(Metrics.GRID_GAP.dp)) {
+        for (row in actions.chunked(2)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Metrics.GRID_GAP.dp)) {
+                for (action in row) {
+                    QuickActionCard2(
+                        action = action,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                if (row.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+data class QuickAction2(
+    val key: String,
+    val title: String,
+    val subtitle: String,
+    val color: Color,
+    val icon: ImageVector,
+    val onClick: () -> Unit
+)
+
+@Composable
+fun QuickActionCard2(action: QuickAction2, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier
+            .height(Metrics.ACTION_CARD_HEIGHT.dp)
+            .clickable(onClick = action.onClick),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(Metrics.TILE_SIZE.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(action.color),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = action.icon,
+                    contentDescription = null,
+                    tint = com.qring.print.ui.theme.TILE_ICON,
+                    modifier = Modifier.size(Metrics.TILE_ICON.dp)
+                )
+            }
+
+            Column {
+                Text(
+                    text = action.title,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp,
+                    color = QringPalette.textPrimary
+                )
+                Text(
+                    text = action.subtitle,
+                    fontSize = 12.sp,
+                    color = QringPalette.textSecondary
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun QuickActionCard(action: QuickAction, modifier: Modifier = Modifier) {

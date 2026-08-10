@@ -1,4 +1,4 @@
-package com.qring.print.ui.customprint
+﻿package com.qring.print.ui.customprint
 
 import android.app.Application
 import android.graphics.Bitmap
@@ -17,19 +17,20 @@ import com.qring.print.model.HIST_TYPE_CUSTOM
 import com.qring.print.model.PrinterStatus
 import com.qring.print.model.PrinterStatusRepository
 import com.qring.print.model.TemplateRecord
-import com.qring.print.protocol.DEFAULT_CODE_2D_SIZE
-import com.qring.print.protocol.DEFAULT_CODE_1D_WIDTH
-import com.qring.print.protocol.DEFAULT_IMAGE_WIDTH
 import com.qring.print.protocol.GrayImage
 import com.qring.print.protocol.TextRenderOptions
 import com.qring.print.protocol.WIDTH_DOTS
 import com.qring.print.render.CanvasComposite
+import com.qring.print.render.DEFAULT_CODE_1D_WIDTH
+import com.qring.print.render.DEFAULT_CODE_2D_SIZE
+import com.qring.print.render.DEFAULT_IMAGE_WIDTH
 import com.qring.print.render.codeOneDAspect
 import com.qring.print.render.compositeToBitmap
 import com.qring.print.render.compositeToRaster
 import com.qring.print.render.composeCanvas
 import com.qring.print.render.loadImageGray
 import com.qring.print.render.renderElementNow
+import com.qring.print.ui.common.FontList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,8 +66,41 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
 
     val printerStatus: StateFlow<PrinterStatus> = PrinterStatusRepository.state
 
+    private val _fontFamilies = MutableStateFlow(listOf("sans-serif", "serif", "monospace"))
+    val fontFamilies: StateFlow<List<String>> = _fontFamilies.asStateFlow()
+
     init {
         restoreFromHistoryPayload()
+    }
+
+    fun loadFonts() {
+        _fontFamilies.value = FontList.getSystemFonts(getApplication())
+    }
+
+    /** 元素在队列里的显示名：文字1、图片1、文字2…（按类型分别计数） */
+    fun elementLabel(el: CanvasElement): String {
+        val kindLabel = when (el.kind) {
+            ElementKind.TEXT -> "文字"
+            ElementKind.IMAGE -> "图片"
+            ElementKind.CODE -> "条码"
+        }
+        val n = _uiState.value.doc.elements
+            .takeWhile { it.id != el.id }
+            .count { it.kind == el.kind } + 1
+        return "$kindLabel$n"
+    }
+
+    /** 设置选中文字元素的字体 */
+    fun setElementFontFamily(index: Int) {
+        val doc = _uiState.value.doc
+        val sel = doc.selected() ?: return
+        if (sel.kind == ElementKind.TEXT) {
+            val families = _fontFamilies.value
+            if (index in families.indices) {
+                sel.textOptions = sel.textOptions.copy(fontFamily = families[index])
+                runRender(sel)
+            }
+        }
     }
 
     private fun restoreFromHistoryPayload() {
@@ -92,7 +126,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
                         "CODE" -> ElementKind.CODE
                         else -> ElementKind.TEXT
                     }
-                    val el = CanvasElement(kind).apply {
+                    val el = CanvasElement(kind = kind).apply {
                         dotX = elObj.optInt("dotX", 0)
                         dotY = elObj.optInt("dotY", 0)
                         dotW = elObj.optInt("dotW", 100)
@@ -111,8 +145,8 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
     fun insertText() {
         val state = _uiState.value
         if (state.busy || state.printing) return
-        val el = CanvasElement(ElementKind.TEXT).apply {
-            text = "双击编辑文字"
+        val el = CanvasElement(kind = ElementKind.TEXT).apply {
+            text = "点击编辑文字"
             textOptions = TextRenderOptions()
             dotH = textOptions.fontSize.toInt() + textOptions.margin.toInt() * 2
             dotX = 0
@@ -126,7 +160,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
     fun insertImage(uri: Uri) {
         val state = _uiState.value
         if (state.busy || state.printing) return
-        val el = CanvasElement(ElementKind.IMAGE).apply {
+        val el = CanvasElement(kind = ElementKind.IMAGE).apply {
             imageUri = uri.toString()
             dotW = DEFAULT_IMAGE_WIDTH
             dotH = DEFAULT_IMAGE_WIDTH
@@ -145,7 +179,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         val is1D = codeTypeIndex >= 0 &&
             codeTypeIndex < com.qring.print.model.CODE_TYPES.size &&
             com.qring.print.model.CODE_TYPES[codeTypeIndex].category == com.qring.print.model.CodeCategory.ONE_D
-        val el = CanvasElement(ElementKind.CODE).apply {
+        val el = CanvasElement(kind = ElementKind.CODE).apply {
             codeContent = if (is1D) "12345678" else "https://example.com"
             this.codeTypeIndex = codeTypeIndex
             if (is1D) {
@@ -185,29 +219,19 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         updateComposite()
     }
 
-    fun toTopSelected() {
-        val doc = _uiState.value.doc
-        val sel = doc.selected() ?: return
-        doc.toTop(sel.id)
-        bump()
-        updateComposite()
-    }
-
-    fun toBottomSelected() {
-        val doc = _uiState.value.doc
-        val sel = doc.selected() ?: return
-        doc.toBottom(sel.id)
-        bump()
-        updateComposite()
-    }
-
     fun moveSelected(dx: Int, dy: Int) {
         val doc = _uiState.value.doc
         val sel = doc.selected() ?: return
-        sel.dotX = maxOf(0, sel.dotX + dx)
-        sel.dotY = maxOf(0, sel.dotY + dy)
-        bump()
-        updateComposite()
+        if (doc.landscape) {
+            // 横排：dotX 方向限制在 0..384（即打印宽度方向），dotY 方向可无限延伸
+            sel.dotX = (sel.dotX + dx).coerceIn(0, 384 - sel.dotW)
+            sel.dotY = maxOf(0, sel.dotY + dy)
+        } else {
+            sel.dotX = maxOf(0, sel.dotX + dx)
+            sel.dotY = maxOf(0, sel.dotY + dy)
+        }
+        bump()          // 选框实时跟手
+        updateComposite() // 画布实时合成（取消旧任务防堆积）
     }
 
     fun resizeSelected(newW: Int, newH: Int) {
@@ -224,6 +248,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         val sel = doc.selected() ?: return
         if (sel.kind == ElementKind.TEXT) {
             sel.text = text
+            bump()
             runRender(sel)
         }
     }
@@ -233,6 +258,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         val sel = doc.selected() ?: return
         if (sel.kind == ElementKind.CODE) {
             sel.codeContent = content
+            bump()
             runRender(sel)
         }
     }
@@ -255,6 +281,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
                 sel.aspect = 1f
             }
             sel.dotX = maxOf(0, (WIDTH_DOTS - sel.dotW) / 2)
+            bump()
             runRender(sel)
         }
     }
@@ -264,6 +291,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         val sel = doc.selected() ?: return
         if (sel.kind == ElementKind.TEXT) {
             sel.textOptions = options
+            bump()
             runRender(sel)
         }
     }
@@ -273,8 +301,75 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         val sel = doc.selected() ?: return
         if (sel.kind == ElementKind.IMAGE) {
             sel.ditherMode = mode
+            bump()
             runRender(sel)
         }
+    }
+
+    fun setSelectedImageThreshold(threshold: Int) {
+        val sel = _uiState.value.doc.selected() ?: return
+        if (sel.kind == ElementKind.IMAGE) {
+            sel.ditherThreshold = threshold.coerceIn(0, 255)
+            bump()
+            runRender(sel)
+        }
+    }
+
+    /** 调整选中元素宽度（24~384），高度按宽高比自动算 */
+    fun setSelectedSize(width: Int) {
+        val sel = _uiState.value.doc.selected() ?: return
+        val w = width.coerceIn(24, 384)
+        val h = maxOf(1, Math.round(w / maxOf(0.01f, sel.aspect)))
+        sel.dotW = w
+        sel.dotH = h
+        sel.geometryLocked = true
+        bump()
+        runRender(sel)
+    }
+
+    /** 图片缩放：百分比 10~150，基于 384 点宽 */
+    fun setSelectedScale(pct: Int) {
+        val sel = _uiState.value.doc.selected() ?: return
+        val p = pct.coerceIn(10, 150)
+        val w = Math.round(384f * p / 100f).coerceIn(24, 384)
+        val h = maxOf(1, Math.round(w / maxOf(0.01f, sel.aspect)))
+        sel.dotW = w
+        sel.dotH = h
+        sel.geometryLocked = true
+        bump()
+        runRender(sel)
+    }
+
+    /** 元素旋转：0~360 度 */
+    fun setSelectedRotation(degrees: Int) {
+        val sel = _uiState.value.doc.selected() ?: return
+        sel.rotation = ((degrees % 360) + 360) % 360
+        bump()
+        runRender(sel)
+    }
+
+    /** 切换水平翻转 */
+    fun toggleFlipH() {
+        val sel = _uiState.value.doc.selected() ?: return
+        sel.flipH = !sel.flipH
+        bump()
+        runRender(sel)
+    }
+
+    /** 切换垂直翻转 */
+    fun toggleFlipV() {
+        val sel = _uiState.value.doc.selected() ?: return
+        sel.flipV = !sel.flipV
+        bump()
+        runRender(sel)
+    }
+
+    /** 画布竖排/横排 */
+    fun setLandscape(landscape: Boolean) {
+        val doc = _uiState.value.doc
+        doc.landscape = landscape
+        bump()
+        updateComposite()
     }
 
     fun swapSelectedImage(uri: Uri) {
@@ -294,7 +389,7 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             try {
                 val (binary, preview) = withContext(Dispatchers.Default) {
-                    renderElementNow(el) ?: return@withContext null
+                    renderElementNow(getApplication(), el) ?: return@withContext null
                 } ?: return@launch
                 el.binary = binary
                 el.preview?.recycle()
@@ -309,15 +404,23 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private var compositeJob: kotlinx.coroutines.Job? = null
+
     private fun updateComposite() {
-        viewModelScope.launch {
-            val composite = withContext(Dispatchers.Default) {
-                composeCanvas(_uiState.value.doc)
+        // 取消上一次合成，避免旧结果（旧横竖排/旧图层顺序）覆盖新状态
+        compositeJob?.cancel()
+        compositeJob = viewModelScope.launch {
+            try {
+                val composite = withContext(Dispatchers.Default) {
+                    composeCanvas(_uiState.value.doc)
+                }
+                val bitmap = compositeToBitmap(composite)
+                val old = _uiState.value.compositeBitmap
+                _uiState.value = _uiState.value.copy(compositeBitmap = bitmap)
+                old?.recycle()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 被新任务取消，忽略
             }
-            val bitmap = compositeToBitmap(composite)
-            val old = _uiState.value.compositeBitmap
-            _uiState.value = _uiState.value.copy(compositeBitmap = bitmap)
-            old?.recycle()
         }
     }
 

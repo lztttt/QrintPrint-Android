@@ -65,13 +65,9 @@ import com.qring.print.R
 import com.qring.print.model.CanvasElement
 import com.qring.print.model.ElementKind
 import com.qring.print.ui.theme.ACTION_BLUE
-import com.qring.print.ui.theme.BRAND
-import com.qring.print.ui.theme.HANDLE_FILL
-import com.qring.print.ui.theme.HANDLE_SIZE
 import com.qring.print.ui.theme.Metrics
 import com.qring.print.ui.theme.ONLINE
 import com.qring.print.ui.theme.QringPalette
-import com.qring.print.ui.theme.SELECT_OUTLINE
 import kotlin.math.roundToInt
 
 /**
@@ -83,12 +79,17 @@ fun CanvasView(
     elements: List<CanvasElement>,
     selectedId: String,
     canvasWidthDp: Float,
+    landscape: Boolean,
     onSelect: (String) -> Unit,
     onMove: (String, Int, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    val scale = canvasWidthDp / 384f
+    // 横排时合成图已旋转，显示宽度对应的是原画布高度
+    val compositeWidth = compositeBitmap?.width ?: 384
+    val scale = if (landscape) canvasWidthDp / maxOf(1, compositeWidth) else canvasWidthDp / 384f
+
+
 
     Box(
         modifier = modifier
@@ -107,38 +108,56 @@ fun CanvasView(
             )
         }
 
-        // 元素选择框
+        // 元素选择框（统一用 dp：offset 与 size 单位一致，保证选框和预览对齐）
         elements.forEach { el ->
             val isSelected = el.id == selectedId
-            val xDp = el.dotX * scale
-            val yDp = el.dotY * scale
-            val wDp = el.dotW * scale
-            val hDp = el.dotH * scale
+            // 横排时把元素坐标旋转映射到显示空间
+            val boxX: Int
+            val boxY: Int
+            val boxW: Int
+            val boxH: Int
+            if (landscape) {
+                val h = compositeWidth // 原画布高度
+                boxX = h - el.dotY - el.dotH
+                boxY = el.dotX
+                boxW = el.dotH
+                boxH = el.dotW
+            } else {
+                boxX = el.dotX
+                boxY = el.dotY
+                boxW = el.dotW
+                boxH = el.dotH
+            }
+            val xDp = (boxX * scale).dp
+            val yDp = (boxY * scale).dp
+            val wDp = (boxW * scale).dp
+            val hDp = (boxH * scale).dp
 
             Box(
                 modifier = Modifier
-                    .offset { IntOffset((el.dotX * scale).roundToInt(), (el.dotY * scale).roundToInt()) }
-                    .size(
-                        width = with(density) { (el.dotW * scale).toDp() },
-                        height = with(density) { (el.dotH * scale).toDp() }
-                    )
+                    .offset(x = xDp, y = yDp)
+                    .size(width = wDp, height = hDp)
                     .border(
                         width = if (isSelected) 2.dp else 0.dp,
-                        color = SELECT_OUTLINE,
+                        color = QringPalette.selectOutline,
                         shape = RoundedCornerShape(2.dp)
                     )
                     .clickable { onSelect(el.id) }
                     .then(
                         if (isSelected) {
-                            Modifier.pointerInput(el.id) {
+                            // key 必须包含 landscape，否则切换横竖排后手势仍用旧的映射
+                            Modifier.pointerInput(el.id, landscape, scale) {
                                 detectDragGestures { change, dragAmount ->
                                     change.consume()
-                                    val dxDp = dragAmount.x
-                                    val dyDp = dragAmount.y
-                                    val dxDot = (dxDp / scale).roundToInt()
-                                    val dyDot = (dyDp / scale).roundToInt()
+                                    val dxDot = (dragAmount.x / scale).roundToInt()
+                                    val dyDot = (dragAmount.y / scale).roundToInt()
                                     if (dxDot != 0 || dyDot != 0) {
-                                        onMove(el.id, dxDot, dyDot)
+                                        if (landscape) {
+                                            // 横排显示是竖排旋转 90° 的结果，屏幕位移要反向映射回画布坐标
+                                            onMove(el.id, dyDot, -dxDot)
+                                        } else {
+                                            onMove(el.id, dxDot, dyDot)
+                                        }
                                     }
                                 }
                             }
@@ -150,9 +169,9 @@ fun CanvasView(
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .size(HANDLE_SIZE.dp)
+                            .size(Metrics.HANDLE_SIZE.dp)
                             .clip(CircleShape)
-                            .background(HANDLE_FILL)
+                            .background(QringPalette.handleFill)
                             .border(2.dp, Color.White, CircleShape)
                     )
                 }
@@ -174,8 +193,6 @@ fun EditorToolbar(
     onInsertImage: () -> Unit,
     onInsertCode: () -> Unit,
     onDelete: () -> Unit,
-    onToTop: () -> Unit,
-    onToBottom: () -> Unit,
     onSave: () -> Unit,
     onPrint: () -> Unit,
     onPreview: () -> Unit,
@@ -226,20 +243,6 @@ fun EditorToolbar(
                     enabled = hasSelection,
                     modifier = Modifier.weight(1f)
                 )
-                ToolButton(
-                    label = "置顶",
-                    icon = Icons.Default.KeyboardArrowUp,
-                    onClick = onToTop,
-                    enabled = hasSelection,
-                    modifier = Modifier.weight(1f)
-                )
-                ToolButton(
-                    label = "置底",
-                    icon = Icons.Default.KeyboardArrowDown,
-                    onClick = onToBottom,
-                    enabled = hasSelection,
-                    modifier = Modifier.weight(1f)
-                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -281,7 +284,7 @@ fun EditorToolbar(
                     onClick = onPrint,
                     enabled = !busy && !printing && hasElements,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = BRAND),
+                    colors = ButtonDefaults.buttonColors(containerColor = QringPalette.brand),
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     if (printing) {

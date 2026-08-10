@@ -17,6 +17,7 @@ import com.qring.print.ui.common.FontList
 import com.qring.print.protocol.bitmapToRaster
 import com.qring.print.protocol.renderTextToPixelMap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,6 +42,8 @@ data class TextPrintUiState(
     val pageMargin: Float = 8f,
     val fontFamilies: List<String> = listOf("sans-serif", "serif", "monospace"),
     val fontFamilyIndex: Int = 0,
+    // 打印浓度 1~5，0 表示默认（不发浓度命令）
+    val thickness: Int = 1,
 )
 
 class TextPrintViewModel(application: Application) : AndroidViewModel(application) {
@@ -76,7 +79,8 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                 letterSpacing = obj.optDouble("letterSpacing", 0.0).toFloat(),
                 lineSpacing = obj.optDouble("lineSpacing", 6.0).toFloat(),
                 pageMargin = obj.optDouble("pageMargin", 8.0).toFloat(),
-                fontFamilyIndex = obj.optInt("fontIndex", 0)
+                fontFamilyIndex = obj.optInt("fontIndex", 0),
+                thickness = obj.optInt("thickness", 1)
             )
         } catch (e: Exception) { }
     }
@@ -113,6 +117,17 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(pageMargin = margin)
     }
 
+    fun setFontFamilyIndex(index: Int) {
+        val families = _uiState.value.fontFamilies
+        if (index in families.indices) {
+            _uiState.value = _uiState.value.copy(fontFamilyIndex = index)
+        }
+    }
+
+    fun setThickness(thickness: Int?) {
+        _uiState.value = _uiState.value.copy(thickness = thickness ?: 0)
+    }
+
     fun loadFonts() {
         val fonts = FontList.getSystemFonts(getApplication())
         _uiState.value = _uiState.value.copy(fontFamilies = fonts)
@@ -143,6 +158,7 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
         if (state.text.isEmpty() || state.printing) return
         viewModelScope.launch {
             try {
+                val old = _uiState.value.previewBitmap
                 val bitmap = withContext(Dispatchers.Default) {
                     renderTextToPixelMap(state.text, buildOptions())
                 }
@@ -150,12 +166,38 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                     previewBitmap = bitmap,
                     showPreview = true
                 )
+                old?.let { if (it != bitmap) { delay(150); it.recycle() } }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     resultOk = false,
                     resultMessage = "预览生成失败"
                 )
             }
+        }
+    }
+
+    /** 自动预览：内容/参数变化时调用，不弹窗，直接更新底部常驻预览 */
+    fun updatePreview() {
+        val state = _uiState.value
+        if (state.text.isEmpty()) {
+            val old = _uiState.value.previewBitmap
+            if (old != null) {
+                _uiState.value = _uiState.value.copy(previewBitmap = null)
+                // 清空时旧位图已不再显示，可安全回收
+                old.recycle()
+            }
+            return
+        }
+        if (state.printing) return
+        viewModelScope.launch {
+            try {
+                val old = _uiState.value.previewBitmap
+                val bitmap = withContext(Dispatchers.Default) {
+                    renderTextToPixelMap(state.text, buildOptions())
+                }
+                _uiState.value = _uiState.value.copy(previewBitmap = bitmap)
+                old?.let { if (it != bitmap) { delay(150); it.recycle() } }
+            } catch (e: Exception) { }
         }
     }
 
@@ -203,7 +245,7 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                     val thumbBitmap = Bitmap.createScaledBitmap(bitmap, 200, Math.round(200f * bitmap.height / bitmap.width), true)
 
                     val printResult = withContext(Dispatchers.IO) {
-                        printerConnection.printRaster(raster, 1)
+                        printerConnection.printRaster(raster, state.thickness.takeIf { it > 0 })
                     }
 
                     // 打印成功后保存历史
@@ -219,6 +261,7 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                                 put("lineSpacing", state.lineSpacing.toDouble())
                                 put("pageMargin", state.pageMargin.toDouble())
                                 put("fontIndex", state.fontFamilyIndex)
+                                put("thickness", state.thickness)
                             }.toString()
                             historyRepo.saveHistory(HIST_TYPE_TEXT, thumbBitmap, payload)
                         } catch (e: Exception) { }

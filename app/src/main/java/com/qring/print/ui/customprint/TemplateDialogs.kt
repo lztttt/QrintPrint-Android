@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qring.print.model.CODE_TYPES
 import com.qring.print.model.CodeCategory
-import com.qring.print.ui.theme.BRAND
 import com.qring.print.ui.theme.QringPalette
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -107,7 +106,7 @@ fun TemplateSaveDialog(
                 Button(
                     onClick = onSave,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = BRAND),
+                    colors = ButtonDefaults.buttonColors(containerColor = QringPalette.brand),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text("保存")

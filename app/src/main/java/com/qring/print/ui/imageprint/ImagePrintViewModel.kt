@@ -2,7 +2,6 @@ package com.qring.print.ui.imageprint
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -18,24 +17,28 @@ import com.qring.print.protocol.DitherMode
 import com.qring.print.protocol.GrayImage
 import com.qring.print.protocol.RasterData
 import com.qring.print.protocol.bitmapToGray
-import com.qring.print.protocol.bitmapToPreviewBitmap
+import com.qring.print.protocol.binaryToPreviewBitmap
 import com.qring.print.protocol.createBinaryCanvas
-import com.qring.print.protocol.decodeImageToPrintWidth
+import com.qring.print.protocol.decodeSourceToPrintWidth
 import com.qring.print.protocol.ditherToBinary
 import com.qring.print.protocol.packBinaryToRaster
 import com.qring.print.protocol.scaleGrayArea
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 data class ImagePrintUiState(
     val imageUri: String = "",
     val previewBitmap: Bitmap? = null,
     val showPreview: Boolean = false,
     val ditherMode: DitherMode = DitherMode.FLOYD_STEINBERG,
+    // 量化阈值 0~255，影响所有抖动算法（默认 128）
+    val threshold: Int = 128,
     val thickness: Int? = null,
     val busy: Boolean = false,
     val busyHint: String = "",
@@ -88,13 +91,16 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.value = _uiState.value.copy(ditherMode = mode)
     }
 
+    fun setThreshold(threshold: Int) {
+        _uiState.value = _uiState.value.copy(threshold = threshold)
+    }
+
     fun setThickness(thickness: Int?) {
         _uiState.value = _uiState.value.copy(thickness = thickness)
     }
 
     /**
-     * 解码图片并生成预览。
-     * 解码期直接缩放到 384 点宽，然后跑抖动二值化生成预览位图。
+     * 解码图片并生成灰度缓存 + 实时预览。
      */
     fun decodeAndPreview() {
         val uri = _uiState.value.imageUri
@@ -104,26 +110,26 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             try {
-                val state = _uiState.value
-                withContext(Dispatchers.Default) {
-                    // 解码并缩放
-                    val bitmap = decodeImageToPrintWidth(uri)
+                val old = _uiState.value.previewBitmap
+                val result = withContext(Dispatchers.Default) {
+                    // 解码并缩放（content:// 与文件路径都能处理）
+                    val bitmap = decodeSourceToPrintWidth(app, uri)
                     val gray = bitmapToGray(bitmap)
                     bitmap.recycle()
 
-                    // 二值化
-                    val binary = ditherToBinary(gray, state.ditherMode, 128) // THRESHOLD_IMAGE
-
-                    // 生成预览位图
+                    val binary = ditherToBinary(gray, _uiState.value.ditherMode, _uiState.value.threshold)
                     val preview = binaryToPreviewBitmap(binary, gray.width, gray.height, false)
-
-                    _uiState.value = _uiState.value.copy(
-                        previewBitmap = preview,
-                        sourceGray = gray,
-                        showPreview = true,
-                        busy = false
-                    )
+                    Pair(preview, gray)
                 }
+                val (preview, gray) = result
+                _uiState.value = _uiState.value.copy(
+                    previewBitmap = preview,
+                    sourceGray = gray,
+                    showPreview = true,
+                    busy = false
+                )
+                // 等当前帧画完旧位图再回收，避免画已回收位图崩溃
+                old?.let { if (it != preview) { delay(150); it.recycle() } }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     busy = false,
@@ -135,25 +141,25 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * 切换抖动模式后重新生成预览。
+     * 切换抖动模式 / 阈值后重新生成实时预览。
      */
-    fun reRenderWithDither(mode: DitherMode) {
+    fun reRender() {
         val gray = _uiState.value.sourceGray ?: return
-        setDitherMode(mode)
-
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(busy = true)
             try {
-                withContext(Dispatchers.Default) {
-                    val binary = ditherToBinary(gray, mode, 128)
-                    val preview = binaryToPreviewBitmap(binary, gray.width, gray.height, false)
-                    val old = _uiState.value.previewBitmap
-                    _uiState.value = _uiState.value.copy(
-                        previewBitmap = preview,
-                        busy = false
-                    )
-                    old?.recycle()
+                val old = _uiState.value.previewBitmap
+                val preview = withContext(Dispatchers.Default) {
+                    val binary = ditherToBinary(gray, _uiState.value.ditherMode, _uiState.value.threshold)
+                    binaryToPreviewBitmap(binary, gray.width, gray.height, false)
                 }
+                _uiState.value = _uiState.value.copy(
+                    previewBitmap = preview,
+                    showPreview = true,
+                    busy = false
+                )
+                // 等当前帧画完旧位图再回收
+                old?.let { if (it != preview) { delay(150); it.recycle() } }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(busy = false)
             }
@@ -198,7 +204,7 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
                 // 光栅化 + 打印
                 val gray = _uiState.value.sourceGray!!
                 val result = withContext(Dispatchers.Default) {
-                    val binary = ditherToBinary(gray, _uiState.value.ditherMode, 128)
+                    val binary = ditherToBinary(gray, _uiState.value.ditherMode, _uiState.value.threshold)
                     val raster = packBinaryToRaster(binary, gray.width, gray.height)
 
                     // 生成缩略图
@@ -215,6 +221,7 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
                             val payload = org.json.JSONObject().apply {
                                 put("imageUri", _uiState.value.imageUri)
                                 put("ditherMode", _uiState.value.ditherMode.code)
+                                put("threshold", _uiState.value.threshold)
                             }.toString()
                             historyRepo.saveHistory(HIST_TYPE_IMAGE, thumbBmp, payload)
                         } catch (e: Exception) { }
@@ -240,9 +247,7 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun dismissPreview() {
-        val old = _uiState.value.previewBitmap
-        _uiState.value = _uiState.value.copy(showPreview = false, previewBitmap = null)
-        old?.recycle()
+        _uiState.value = _uiState.value.copy(showPreview = false)
     }
 
     fun clearResult() {

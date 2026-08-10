@@ -1,5 +1,6 @@
 package com.qring.print.render
 
+import android.content.Context
 import android.graphics.Bitmap
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
@@ -17,11 +18,15 @@ import com.qring.print.protocol.binaryToPreviewBitmap
 import com.qring.print.protocol.blitBinary
 import com.qring.print.protocol.bitmapToGrayRaw
 import com.qring.print.protocol.createBinaryCanvas
-import com.qring.print.protocol.decodeImageToPrintWidth
+import com.qring.print.protocol.decodeSourceToPrintWidth
 import com.qring.print.protocol.ditherToBinary
 import com.qring.print.protocol.measureTextContentWidth
 import com.qring.print.protocol.packBinaryToRaster
+import com.qring.print.protocol.packBinaryToRasterArbitrary
 import com.qring.print.protocol.renderTextToPixelMapIn
+import com.qring.print.protocol.flipBinaryHorizontal
+import com.qring.print.protocol.flipBinaryVertical
+import com.qring.print.protocol.rotateBinary
 import com.qring.print.protocol.scaleGrayArea
 import com.qring.print.protocol.scaleGrayNearest
 import com.qring.print.protocol.squeezeRows
@@ -91,10 +96,10 @@ fun renderCodeGray(content: String, codeLabel: String): GrayImage {
 // ── 图片 ──────────────────────────────────────────────────
 
 /**
- * 解码图片成 384 宽的灰度缓存。
+ * 解码图片成 384 宽的灰度缓存（content:// 与文件路径都能处理）。
  */
-fun loadImageGray(uri: String): GrayImage {
-    val bitmap = decodeImageToPrintWidth(uri)
+fun loadImageGray(context: Context, uri: String): GrayImage {
+    val bitmap = decodeSourceToPrintWidth(context, uri)
     val gray = bitmapToGrayRaw(bitmap)
     bitmap.recycle()
     return gray
@@ -104,11 +109,15 @@ fun loadImageGray(uri: String): GrayImage {
 
 /**
  * 按元素当前尺寸渲染出二值位图，并同步更新屏幕预览图。
+ * 渲染完成后按元素的 rotation 旋转。
  */
 fun renderElement(el: CanvasElement): Pair<ByteArray, Bitmap> {
     val targetW = maxOf(1, el.dotW)
     val targetH = maxOf(1, el.dotH)
     var binary: ByteArray
+    var bw: Int
+    var bh: Int
+    var transparentWhite = false
 
     when (el.kind) {
         ElementKind.TEXT -> {
@@ -122,34 +131,84 @@ fun renderElement(el: CanvasElement): Pair<ByteArray, Bitmap> {
             val gray = bitmapToGrayRaw(bitmap)
             bitmap.recycle()
             binary = ditherToBinary(gray, DitherMode.NONE, 211) // THRESHOLD_TEXT
+            bw = gray.width
+            bh = gray.height
+            transparentWhite = true // 文字白底透明
 
-            // 更新元素几何
+            // 更新元素几何（旋转前）
             el.dotW = gray.width
             el.dotH = gray.height
             el.aspect = if (gray.height > 0) gray.width.toFloat() / gray.height else 1f
-
-            // 文字白底透明
-            val preview = binaryToPreviewBitmap(binary, gray.width, gray.height, true)
-            return Pair(binary, preview)
         }
 
         ElementKind.IMAGE -> {
             val source = el.sourceGray ?: throw IllegalStateException("Image not decoded")
             val scaled = scaleGrayArea(source, targetW, targetH)
-            binary = ditherToBinary(scaled, el.ditherMode, 128)
-            val preview = binaryToPreviewBitmap(binary, scaled.width, scaled.height, false)
-            return Pair(binary, preview)
+            binary = ditherToBinary(scaled, el.ditherMode, el.ditherThreshold)
+            bw = scaled.width
+            bh = scaled.height
         }
 
         ElementKind.CODE -> {
             val codeGray = renderCodeGray(el.codeContent, el.codeTypeLabel())
             val scaled = scaleGrayNearest(codeGray, targetW, targetH)
             binary = ditherToBinary(scaled, DitherMode.NONE, 128)
-            val preview = binaryToPreviewBitmap(binary, scaled.width, scaled.height, false)
-            return Pair(binary, preview)
+            bw = scaled.width
+            bh = scaled.height
         }
     }
+
+    var preview = binaryToPreviewBitmap(binary, bw, bh, transparentWhite)
+
+    // 应用元素旋转
+    if (el.rotation % 360 != 0) {
+        val (rotBinary, nw, nh) = rotateBinary(binary, bw, bh, el.rotation)
+        binary = rotBinary
+        el.dotW = nw
+        el.dotH = nh
+        // 注意：不更新 el.aspect，保留旋转前的原始宽高比
+        // 这样下次渲染时仍用原始比例缩放，避免反复旋转导致比例错乱
+        // 旋转预览位图
+        try {
+            val m = android.graphics.Matrix().apply { postRotate(el.rotation.toFloat()) }
+            val rotated = android.graphics.Bitmap.createBitmap(
+                preview, 0, 0, preview.width, preview.height, m, true
+            )
+            if (rotated != preview) preview.recycle()
+            preview = rotated
+        } catch (e: Exception) { }
+    }
+
+    // 应用水平翻转
+    if (el.flipH) {
+        binary = flipBinaryHorizontal(binary, el.dotW, el.dotH)
+        try {
+            val m = android.graphics.Matrix().apply { preScale(-1f, 1f) }
+            val flipped = android.graphics.Bitmap.createBitmap(
+                preview, 0, 0, preview.width, preview.height, m, true
+            )
+            if (flipped != preview) preview.recycle()
+            preview = flipped
+        } catch (e: Exception) { }
+    }
+
+    // 应用垂直翻转
+    if (el.flipV) {
+        binary = flipBinaryVertical(binary, el.dotW, el.dotH)
+        try {
+            val m = android.graphics.Matrix().apply { preScale(1f, -1f) }
+            val flipped = android.graphics.Bitmap.createBitmap(
+                preview, 0, 0, preview.width, preview.height, m, true
+            )
+            if (flipped != preview) preview.recycle()
+            preview = flipped
+        } catch (e: Exception) { }
+    }
+
+    return Pair(binary, preview)
 }
+
+
 
 private fun CanvasElement.codeTypeLabel(): String {
     return com.qring.print.model.CODE_TYPES.getOrNull(codeTypeIndex)?.label ?: "QR Code"
@@ -158,13 +217,17 @@ private fun CanvasElement.codeTypeLabel(): String {
 /**
  * 单元素完整渲染入口（含解码）。
  */
-fun renderElementNow(el: CanvasElement, onStage: ((String) -> Unit)? = null): Pair<ByteArray, Bitmap>? {
+fun renderElementNow(
+    context: Context,
+    el: CanvasElement,
+    onStage: ((String) -> Unit)? = null
+): Pair<ByteArray, Bitmap>? {
     onStage?.invoke("开始渲染")
 
     // 图片首次渲染需要解码
     if (el.kind == ElementKind.IMAGE && el.sourceGray == null && el.imageUri.isNotEmpty()) {
         onStage?.invoke("解码图片")
-        val gray = loadImageGray(el.imageUri)
+        val gray = loadImageGray(context, el.imageUri)
         el.sourceGray = gray
 
         // 新插入的图片按真实比例设尺寸
@@ -205,7 +268,12 @@ data class CanvasComposite(
  * 把所有元素合成成一张 384 × H 的二值图。
  */
 fun composeCanvas(doc: CanvasDoc): CanvasComposite {
-    val height = doc.contentHeight()
+    val contentH = doc.contentHeight()
+    // 空画布：给一张最小空白，不旋转，避免横排产生 1 像素宽的病态位图
+    if (contentH <= 0) {
+        return CanvasComposite(createBinaryCanvas(WIDTH_DOTS, 1), WIDTH_DOTS, 1)
+    }
+    val height = contentH
     val canvas = createBinaryCanvas(WIDTH_DOTS, height)
 
     for (el in doc.elements) {
@@ -217,8 +285,14 @@ fun composeCanvas(doc: CanvasDoc): CanvasComposite {
         blitBinary(canvas, WIDTH_DOTS, height, bits, w, rows, el.dotX, el.dotY)
     }
 
-    Timber.tag(TAG).d("composed ${doc.elements.size} elements, height $height")
-    return CanvasComposite(canvas, WIDTH_DOTS, height)
+    Timber.tag(TAG).d("composed ${doc.elements.size} elements, height $height, landscape=${doc.landscape}")
+    // 横排：整幅旋转 90°，宽高互换
+    return if (doc.landscape) {
+        val (rot, nw, nh) = rotateBinary(canvas, WIDTH_DOTS, height, 90)
+        CanvasComposite(rot, nw, nh)
+    } else {
+        CanvasComposite(canvas, WIDTH_DOTS, height)
+    }
 }
 
 /**
@@ -229,10 +303,10 @@ fun compositeToBitmap(composite: CanvasComposite): Bitmap {
 }
 
 /**
- * 合成图 → 光栅数据（打印用）。
+ * 合成图 → 光栅数据（打印用）。支持任意宽度（横排旋转后宽度可能 ≠ 384）。
  */
 fun compositeToRaster(composite: CanvasComposite): RasterData {
-    return packBinaryToRaster(composite.binary, composite.width, composite.height)
+    return packBinaryToRasterArbitrary(composite.binary, composite.width, composite.height)
 }
 
 // ── 模板序列化 ──────────────────────────────────────────────
@@ -253,8 +327,12 @@ fun elementToTemplateData(el: CanvasElement): TemplateElementData {
         textOptions = el.textOptions,
         imageUri = el.imageUri,
         ditherMode = el.ditherMode.code,
+        ditherThreshold = el.ditherThreshold,
         codeContent = el.codeContent,
-        codeTypeIndex = el.codeTypeIndex
+        codeTypeIndex = el.codeTypeIndex,
+        rotation = el.rotation,
+        flipH = el.flipH,
+        flipV = el.flipV
     )
 }
 
@@ -279,7 +357,11 @@ fun templateDataToElement(data: TemplateElementData): CanvasElement {
     el.textOptions = data.textOptions
     el.imageUri = data.imageUri
     el.ditherMode = DitherMode.entries.getOrElse(data.ditherMode) { DitherMode.FLOYD_STEINBERG }
+    el.ditherThreshold = data.ditherThreshold
     el.codeContent = data.codeContent
     el.codeTypeIndex = data.codeTypeIndex
+    el.rotation = data.rotation
+    el.flipH = data.flipH
+    el.flipV = data.flipV
     return el
 }

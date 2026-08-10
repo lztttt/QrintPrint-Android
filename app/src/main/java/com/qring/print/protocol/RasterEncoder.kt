@@ -1,14 +1,18 @@
 package com.qring.print.protocol
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
-import com.qring.print.protocol.Dither.ditherToBinary
+import android.net.Uri
+import com.qring.print.protocol.ditherToBinary
 import timber.log.Timber
 import java.io.File
 import java.io.FileDescriptor
+import java.io.FileInputStream
+import java.io.InputStream
 
 const val DOMAIN = 0x0001
 const val TAG = "RasterEncoder"
@@ -41,15 +45,15 @@ data class RasterData(
 // ── 图片解码 ──────────────────────────────────────────────
 
 /**
- * 从文件路径解码图片，并等比缩放到 384 点宽。
+ * 从任意可打开的 InputStream 解码图片，并等比缩放到 384 点宽。
  *
- * 直接用 BitmapFactory 的 inSampleSize + target size 在解码期缩放，
- * 比解码全尺寸再 scale 省内存 —— 手机拍的照片动辄 4000px 宽。
+ * 用 inSampleSize 在解码期缩放，比解码全尺寸再 scale 省内存。
+ * 注意：先读一次边界再解码一次，content:// 的流不能复用，必须重新 open。
  */
-fun decodeImageToPrintWidth(path: String): Bitmap {
+private fun decodeStreamToPrintWidth(open: () -> InputStream): Bitmap {
     // 先只读尺寸
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, options)
+    open().use { BitmapFactory.decodeStream(it, null, options) }
 
     val srcWidth = options.outWidth
     val srcHeight = options.outHeight
@@ -69,8 +73,8 @@ fun decodeImageToPrintWidth(path: String): Bitmap {
         inPreferredConfig = Bitmap.Config.ARGB_8888
     }
 
-    val decoded = BitmapFactory.decodeFile(path, decodeOptions)
-        ?: throw IllegalStateException("BitmapFactory.decodeFile 返回 null")
+    val decoded = open().use { BitmapFactory.decodeStream(it, null, decodeOptions) }
+        ?: throw IllegalStateException("BitmapFactory.decodeStream 返回 null")
 
     // 精确缩放到目标尺寸
     return if (decoded.width != WIDTH_DOTS || decoded.height != targetHeight) {
@@ -79,6 +83,35 @@ fun decodeImageToPrintWidth(path: String): Bitmap {
         scaled
     } else {
         decoded
+    }
+}
+
+/**
+ * 从文件路径解码图片，并等比缩放到 384 点宽。
+ */
+fun decodeImageToPrintWidth(path: String): Bitmap {
+    return decodeStreamToPrintWidth { FileInputStream(path) }
+}
+
+/**
+ * 从 content:// 或 file:// URI 解码图片（相册选图走这条路）。
+ */
+fun decodeUriToPrintWidth(context: Context, uriString: String): Bitmap {
+    val uri = Uri.parse(uriString)
+    return decodeStreamToPrintWidth {
+        context.contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("无法打开图片源")
+    }
+}
+
+/**
+ * 自动判断：content:// 走 ContentResolver，其余按文件路径。
+ */
+fun decodeSourceToPrintWidth(context: Context, source: String): Bitmap {
+    return if (source.startsWith("content://") || source.startsWith("file://")) {
+        decodeUriToPrintWidth(context, source)
+    } else {
+        decodeImageToPrintWidth(source)
     }
 }
 
@@ -133,7 +166,7 @@ fun bitmapToGray(bitmap: Bitmap): GrayImage {
 // ── 光栅打包 ──────────────────────────────────────────────
 
 /**
- * 二值数据 → 光栅字节。
+ * 二值数据 → 光栅字节（384 点宽专用）。
  *
  * 编码规则：每行 48 字节，MSB first（bit7 = 最左像素），置 1 = 黑。
  */
@@ -151,6 +184,89 @@ fun packBinaryToRaster(binary: ByteArray, width: Int, height: Int): RasterData {
         }
     }
     return RasterData(out, WIDTH_BYTES, height)
+}
+
+/**
+ * 二值数据 → 光栅字节（任意宽度，横排旋转后使用）。
+ * 每行字节数 = ceil(width/8)，MSB first，置 1 = 黑。
+ */
+fun packBinaryToRasterArbitrary(binary: ByteArray, width: Int, height: Int): RasterData {
+    val widthBytes = (width + 7) / 8
+    val out = ByteArray(widthBytes * height)
+    for (y in 0 until height) {
+        val rowBase = y * width
+        val outBase = y * widthBytes
+        for (x in 0 until width) {
+            if (binary[rowBase + x].toInt() == 1) {
+                out[outBase + (x ushr 3)] = (out[outBase + (x ushr 3)].toInt() or (0x80 ushr (x and 7))).toByte()
+            }
+        }
+    }
+    return RasterData(out, widthBytes, height)
+}
+
+/** 二值位图旋转：degrees 取 0/90/180/270，返回 (新位图, 新宽, 新高) */
+fun rotateBinary(
+    binary: ByteArray, width: Int, height: Int, degrees: Int
+): Triple<ByteArray, Int, Int> {
+    return when (degrees % 360) {
+        180 -> {
+            val out = ByteArray(width * height)
+            for (i in 0 until width * height) {
+                out[width * height - 1 - i] = binary[i]
+            }
+            Triple(out, width, height)
+        }
+        90 -> {
+            // 顺时针 90°：新宽 = 原高，新高 = 原宽；(x,y) → (h-1-y, x)
+            val out = ByteArray(width * height)
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    out[x * height + (height - 1 - y)] = binary[y * width + x]
+                }
+            }
+            Triple(out, height, width)
+        }
+        270 -> {
+            // 逆时针 90°：新宽 = 原高，新高 = 原宽；(x,y) → (y, w-1-x)
+            val out = ByteArray(width * height)
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    out[(width - 1 - x) * height + y] = binary[y * width + x]
+                }
+            }
+            Triple(out, height, width)
+        }
+        else -> Triple(binary, width, height)
+    }
+}
+
+/** 二值位图水平翻转（左右镜像） */
+fun flipBinaryHorizontal(
+    binary: ByteArray, width: Int, height: Int
+): ByteArray {
+    val out = ByteArray(width * height)
+    for (y in 0 until height) {
+        val srcRow = y * width
+        val dstRow = y * width
+        for (x in 0 until width) {
+            out[dstRow + (width - 1 - x)] = binary[srcRow + x]
+        }
+    }
+    return out
+}
+
+/** 二值位图垂直翻转（上下镜像） */
+fun flipBinaryVertical(
+    binary: ByteArray, width: Int, height: Int
+): ByteArray {
+    val out = ByteArray(width * height)
+    for (y in 0 until height) {
+        val srcRow = y * width
+        val dstRow = (height - 1 - y) * width
+        System.arraycopy(binary, srcRow, out, dstRow, width)
+    }
+    return out
 }
 
 // ── 便捷封装 ──────────────────────────────────────────────
@@ -174,17 +290,24 @@ fun binaryToPreviewBitmap(
     binary: ByteArray, width: Int, height: Int,
     transparentWhite: Boolean = false
 ): Bitmap {
-    val pixels = IntArray(width * height)
-    for (i in 0 until width * height) {
-        val black = binary[i].toInt() == 1
+    val w = maxOf(1, width)
+    val h = maxOf(1, height)
+    val pixels = IntArray(w * h)
+    for (i in 0 until w * h) {
+        val black = binary.getOrElse(i) { 0 }.toInt() == 1
         val value = if (black) 0 else 255
         val alpha = if (transparentWhite && !black) 0 else 255
         pixels[i] = (alpha shl 24) or (value shl 16) or (value shl 8) or value
     }
-    return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+    return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
 }
 
 // ── 文本渲染选项 ──────────────────────────────────────────
+
+/** 按字体族 + 粗斜体构造 Typeface；内置字体（楷体/宋体）优先，解析不了回落默认 */
+private fun typefaceFor(options: TextRenderOptions): Typeface {
+    return com.qring.print.ui.common.FontList.typefaceFor(options.fontFamily, options.bold, options.italic)
+}
 
 data class TextRenderOptions(
     val fontFamily: String = "sans-serif",
@@ -226,7 +349,7 @@ private fun wrapText(
                 current = candidate
             } else {
                 lines.add(current)
-                current = ch
+                current = ch.toString()
             }
         }
         lines.add(current)
@@ -247,6 +370,7 @@ fun measureTextContentWidth(
     val paint = Paint().apply {
             textSize = options.fontSize * 3f // 考虑屏幕密度
             letterSpacing = options.letterSpacing
+            typeface = typefaceFor(options)
         }
     val usable = width - 2 * options.margin
     val lines = wrapText(text, paint, usable)
@@ -256,7 +380,7 @@ fun measureTextContentWidth(
         val w = paint.measureText(line)
         if (w > widest) widest = w
     }
-    val content = maxOf(options.fontSize, Math.ceil(widest).toFloat())
+    val content = maxOf(options.fontSize, Math.ceil(widest.toDouble()).toFloat())
     return minOf(Math.round(width), Math.round(content + 2 * options.margin)).toInt()
 }
 
@@ -289,6 +413,7 @@ fun renderTextToPixelMapIn(
         color = android.graphics.Color.BLACK
         isFakeBoldText = options.bold
         isUnderlineText = options.underline
+        typeface = typefaceFor(options)
     }
 
     val usable = width - 2 * options.margin
@@ -308,10 +433,10 @@ fun renderTextToPixelMapIn(
     // 绘制文字
     paint.color = android.graphics.Color.BLACK
     paint.textAlign = Paint.Align.LEFT
-    paint.textBaseline = Paint.Align.TOP // 手动置顶
+    val fontMetrics = paint.fontMetrics
 
     for (i in lines.indices) {
-        val y = options.margin + i * lineHeight
+        val y = options.margin + i * lineHeight - fontMetrics.ascent
         canvas.drawText(lines[i], options.margin, y, paint)
 
         // 下划线

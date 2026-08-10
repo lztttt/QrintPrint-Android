@@ -10,7 +10,8 @@ data class TemplateRecord(
     val minLength: Int,
     val updatedAt: Long,
     val thumbnailPath: String,
-    val elements: List<TemplateElementData>
+    val elements: List<TemplateElementData>,
+    val landscape: Boolean = false
 )
 
 /**
@@ -29,8 +30,12 @@ data class TemplateElementData(
     val textOptions: com.qring.print.protocol.TextRenderOptions,
     val imageUri: String,
     val ditherMode: Int,
+    val ditherThreshold: Int = 128,
     val codeContent: String,
-    val codeTypeIndex: Int
+    val codeTypeIndex: Int,
+    val rotation: Int = 0,
+    val flipH: Boolean = false,
+    val flipV: Boolean = false
 )
 
 /**

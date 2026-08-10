@@ -1,5 +1,6 @@
 package com.qring.print.ui.codeprint
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,10 +23,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.DataMatrix
 import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.QrCode
-import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -34,12 +32,11 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -59,10 +56,10 @@ import com.qring.print.R
 import com.qring.print.model.CODE_TYPES
 import com.qring.print.model.CodeCategory
 import com.qring.print.model.ConnState
-import com.qring.print.ui.theme.BRAND
 import com.qring.print.ui.theme.Metrics
 import com.qring.print.ui.theme.ONLINE
 import com.qring.print.ui.theme.QringPalette
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,11 +70,18 @@ fun CodePrintScreen(
     val uiState by viewModel.uiState.collectAsState()
     val printerStatus by viewModel.printerStatus.collectAsState()
 
+    // 实时预览：内容/码制变化后防抖渲染
+    LaunchedEffect(uiState.content, uiState.codeTypeIndex) {
+        delay(400)
+        viewModel.updatePreview()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(QringPalette.pageBg)
     ) {
+        // 顶栏
         TopAppBar(
             title = { Text("条码打印") },
             navigationIcon = {
@@ -91,16 +95,21 @@ fun CodePrintScreen(
             )
         )
 
+        // 顶部：实时预览卡片
+        PreviewCard(
+            preview = uiState.previewBitmap,
+            content = uiState.content,
+            codeTypeLabel = CODE_TYPES.getOrNull(uiState.codeTypeIndex)?.label ?: "QR Code"
+        )
+
+        // 中间：输入 + 设置（可滚动）
         Column(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = Metrics.PAGE_PADDING.dp)
-                .padding(bottom = 16.dp)
+                .padding(top = 12.dp, bottom = 12.dp)
         ) {
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 连接状态
             ConnectionBanner(printerStatus = printerStatus)
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -112,7 +121,7 @@ fun CodePrintScreen(
                 enabled = !uiState.printing
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // 码制选择
             CodeTypeSelector(
@@ -120,88 +129,86 @@ fun CodePrintScreen(
                 onSelect = viewModel::setCodeTypeIndex,
                 enabled = !uiState.printing
             )
+        }
 
-            Spacer(modifier = Modifier.height(24.dp))
+        // 底部：操作按键
+        BottomActionBar(
+            printing = uiState.printing,
+            canPrint = uiState.content.isNotEmpty(),
+            resultMessage = uiState.resultMessage,
+            resultOk = uiState.resultOk,
+            onPrint = viewModel::print
+        )
+    }
+}
 
-            // 操作按钮
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+@Composable
+private fun PreviewCard(
+    preview: android.graphics.Bitmap?,
+    content: String,
+    codeTypeLabel: String
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Metrics.PAGE_PADDING.dp)
+            .padding(top = 12.dp),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Text(
+                text = if (preview != null)
+                    "宽 ${preview.width} 点(${String.format("%.1f", preview.width / 8.0)}mm) × 高 ${preview.height} 点(${String.format("%.1f", preview.height / 8.0)}mm) · $codeTypeLabel"
+                else if (content.isEmpty())
+                    "输入内容后自动预览"
+                else
+                    "正在生成预览…",
+                fontSize = 11.sp,
+                color = QringPalette.textSecondary
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.White)
             ) {
-                Button(
-                    onClick = viewModel::generateAndPreview,
-                    enabled = !uiState.printing && !uiState.busy && uiState.content.isNotEmpty(),
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = QringPalette.surfaceSunken,
-                        contentColor = QringPalette.textPrimary
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (uiState.busy) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = QringPalette.textPrimary,
-                            strokeWidth = 2.dp
+                when {
+                    preview != null -> {
+                        Image(
+                            bitmap = preview.asImageBitmap(),
+                            contentDescription = "条码预览",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                            contentScale = ContentScale.FillWidth
                         )
-                    } else {
-                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(stringResource(R.string.preview))
-                }
-
-                Button(
-                    onClick = viewModel::print,
-                    enabled = !uiState.printing && !uiState.busy && uiState.previewBitmap != null,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = BRAND),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (uiState.printing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp
+                    content.isEmpty() -> {
+                        Text(
+                            text = "输入内容后自动预览",
+                            color = QringPalette.textSecondary,
+                            fontSize = 13.sp,
+                            modifier = Modifier.align(Alignment.Center)
                         )
-                    } else {
-                        Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(stringResource(R.string.print))
-                }
-            }
-
-            // 结果
-            if (uiState.resultMessage.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (uiState.resultOk)
-                            ONLINE.copy(alpha = 0.1f)
-                        else
-                            Color(0xFFFF4D4F).copy(alpha = 0.1f)
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(
-                        text = uiState.resultMessage,
-                        modifier = Modifier.padding(12.dp),
-                        color = if (uiState.resultOk) ONLINE else Color(0xFFFF4D4F),
-                        fontSize = 14.sp
-                    )
+                    else -> {
+                        Text(
+                            text = "…",
+                            color = QringPalette.textSecondary,
+                            fontSize = 13.sp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
                 }
             }
         }
-    }
-
-    // 预览弹窗
-    if (uiState.showPreview && uiState.previewBitmap != null) {
-        CodePreviewSheet(
-            bitmap = uiState.previewBitmap!!,
-            onDismiss = viewModel::dismissPreview
-        )
     }
 }
 
@@ -229,7 +236,7 @@ private fun ContentInput(
                 fontSize = 16.sp,
                 color = QringPalette.textPrimary
             ),
-            cursorBrush = SolidColor(BRAND),
+            cursorBrush = SolidColor(QringPalette.brand),
             decorationBox = { innerTextField ->
                 Box {
                     if (content.isEmpty()) {
@@ -276,12 +283,11 @@ private fun CodeTypeSelector(
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                itemsIndexed(CODE_TYPES.filter { it.category == CodeCategory.TWO_D }) { idx, codeType ->
+                itemsIndexed(CODE_TYPES.filter { it.category == CodeCategory.TWO_D }) { _, codeType ->
                     val realIndex = CODE_TYPES.indexOf(codeType)
-                    val active = realIndex == selectedIndex
                     CodeTypeChip(
                         label = codeType.label,
-                        active = active,
+                        active = realIndex == selectedIndex,
                         enabled = enabled,
                         onClick = { onSelect(realIndex) }
                     )
@@ -300,12 +306,11 @@ private fun CodeTypeSelector(
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                itemsIndexed(CODE_TYPES.filter { it.category == CodeCategory.ONE_D }) { idx, codeType ->
+                itemsIndexed(CODE_TYPES.filter { it.category == CodeCategory.ONE_D }) { _, codeType ->
                     val realIndex = CODE_TYPES.indexOf(codeType)
-                    val active = realIndex == selectedIndex
                     CodeTypeChip(
                         label = codeType.label,
-                        active = active,
+                        active = realIndex == selectedIndex,
                         enabled = enabled,
                         onClick = { onSelect(realIndex) }
                     )
@@ -325,7 +330,7 @@ private fun CodeTypeChip(
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(if (active) BRAND else QringPalette.surfaceSunken)
+            .background(if (active) QringPalette.brand else QringPalette.surfaceSunken)
             .clickable(enabled = enabled) { onClick() }
             .padding(horizontal = 12.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
@@ -339,43 +344,68 @@ private fun CodeTypeChip(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CodePreviewSheet(
-    bitmap: android.graphics.Bitmap,
-    onDismiss: () -> Unit
+private fun BottomActionBar(
+    printing: Boolean,
+    canPrint: Boolean,
+    resultMessage: String,
+    resultOk: Boolean,
+    onPrint: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState()
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = QringPalette.pageBg
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(QringPalette.surface)
+            .padding(horizontal = Metrics.PAGE_PADDING.dp)
+            .padding(top = 10.dp, bottom = 16.dp)
     ) {
-        Column(
+        if (resultMessage.isNotEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (resultOk)
+                        ONLINE.copy(alpha = 0.1f)
+                    else
+                        Color(0xFFFF4D4F).copy(alpha = 0.1f)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    text = resultMessage,
+                    modifier = Modifier.padding(12.dp),
+                    color = if (resultOk) ONLINE else Color(0xFFFF4D4F),
+                    fontSize = 14.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        Button(
+            onClick = onPrint,
+            enabled = !printing && canPrint,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
-                .padding(bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = QringPalette.brand),
+            shape = RoundedCornerShape(12.dp)
         ) {
-            Text(
-                text = "打印预览",
-                fontSize = 14.sp,
-                color = QringPalette.textSecondary,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "预览",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.White)
-                    .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.FillWidth
-            )
+            if (printing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("打印中…", fontSize = 15.sp)
+            } else {
+                Icon(
+                    Icons.Default.Print,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(stringResource(R.string.print), fontSize = 16.sp)
+            }
         }
     }
 }

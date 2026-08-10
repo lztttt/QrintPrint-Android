@@ -63,12 +63,12 @@ fun scaleGrayArea(src: GrayImage, targetW: Int, targetH: Int): GrayImage {
     for (y in 0 until h) {
         val y0 = (y.toFloat() * yRatio).toInt()
         // 至少覆盖一行，否则某些比例下 y0 === y1 会导致除零
-        val y1 = maxOf(y0 + 1, minOf(src.height, Math.ceil((y + 1).toFloat() * yRatio).toInt()))
+        val y1 = maxOf(y0 + 1, minOf(src.height, Math.ceil(((y + 1).toFloat() * yRatio).toDouble()).toInt()))
         val dstRow = y * w
 
         for (x in 0 until w) {
             val x0 = (x.toFloat() * xRatio).toInt()
-            val x1 = maxOf(x0 + 1, minOf(src.width, Math.ceil((x + 1).toFloat() * xRatio).toInt()))
+            val x1 = maxOf(x0 + 1, minOf(src.width, Math.ceil(((x + 1).toFloat() * xRatio).toDouble()).toInt()))
 
             var sum = 0f
             var count = 0

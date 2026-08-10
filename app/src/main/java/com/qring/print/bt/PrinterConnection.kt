@@ -25,6 +25,7 @@ import com.qring.print.protocol.cmdRasterHeader
 import com.qring.print.protocol.cmdThickness
 import com.qring.print.protocol.faultLabel
 import com.qring.print.protocol.faultMessage
+import com.qring.print.protocol.parseStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -144,7 +145,11 @@ class PrinterConnection private constructor() {
 
     // ── 连接 / 断开 ───────────────────────────────────────────
 
-    suspend fun connect(address: String): Boolean = mutex.withLock {
+    suspend fun connect(address: String): Boolean = withContext(Dispatchers.IO) {
+        doConnect(address)
+    }
+
+    private suspend fun doConnect(address: String): Boolean = mutex.withLock {
         disconnect()
 
         PrinterStatusRepository.update { it.copy(
@@ -246,7 +251,9 @@ class PrinterConnection private constructor() {
         ) }
     }
 
-    suspend fun autoReconnect() {
+    suspend fun autoReconnect() = withContext(Dispatchers.IO) { doAutoReconnect() }
+
+    private suspend fun doAutoReconnect() {
         val deviceId = loadDeviceId() ?: return
         if (deviceId.isEmpty()) return
 
@@ -334,7 +341,10 @@ class PrinterConnection private constructor() {
         while (System.currentTimeMillis() < deadline) {
             synchronized(rxBuffer) {
                 if (rxBuffer.size >= n) {
-                    return rxBuffer.subList(0, n).also { rxBuffer.subList(0, n).clear() }
+                    // 先拷贝出结果再清空，避免返回的 subList 因底层被改而失效
+                    val result = rxBuffer.take(n)
+                    rxBuffer.subList(0, n).clear()
+                    return result
                 }
             }
             delay(20)
@@ -405,10 +415,9 @@ class PrinterConnection private constructor() {
 
     suspend fun queryDeviceInfo() {
         if (busy) return
-        PrinterStatusRepository.update { it.copy(
-            model = queryString(CMD_MODEL),
-            firmware = queryString(CMD_FW_VERSION)
-        ) }
+        val model = queryString(CMD_MODEL)
+        val firmware = queryString(CMD_FW_VERSION)
+        PrinterStatusRepository.update { it.copy(model = model, firmware = firmware) }
     }
 
     suspend fun refreshAll() {
@@ -534,6 +543,15 @@ class PrinterConnection private constructor() {
         } catch (e: Exception) {
             ""
         }
+    }
+
+    /** 上次连接过的打印机地址，没有则返回 null */
+    fun lastDeviceId(): String? = loadDeviceId()?.takeIf { it.isNotEmpty() }
+
+    /** 上次连接过的打印机名称 */
+    fun lastDeviceName(): String? {
+        val id = lastDeviceId() ?: return null
+        return resolveName(id).ifEmpty { null }
     }
 
 }

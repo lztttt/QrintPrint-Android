@@ -11,6 +11,11 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 const val DOMAIN = 0x0001
@@ -32,7 +37,9 @@ fun matchesDeviceFilter(name: String?): Boolean {
 data class BtDevice(
     val address: String,
     val name: String,
-    val paired: Boolean
+    val paired: Boolean,
+    /** 信号强度 dBm，发现时从广播里取，越接近 0 越强 */
+    val rssi: Int? = null
 )
 
 /**
@@ -83,6 +90,8 @@ object BtPermissionHelper {
  */
 class PrinterDiscovery(private val context: Context) {
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val bluetoothAdapter: BluetoothAdapter? = try {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         manager.adapter
@@ -97,6 +106,9 @@ class PrinterDiscovery(private val context: Context) {
     private val seenAddresses = mutableSetOf<String>()
     private val devices = mutableListOf<BtDevice>()
 
+    /** 每台设备最近一次看到的信号强度（dBm） */
+    private val lastRssi = mutableMapOf<String, Int>()
+
     private val discoveryReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -108,16 +120,57 @@ class PrinterDiscovery(private val context: Context) {
                         intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                     }
                     device?.let {
-                        val name = try { it.name } catch (e: SecurityException) { null }
+                        // 优先用广播里带的名字（BLE 设备常靠这个），否则读缓存名
+                        val name = intent.getStringExtra(BluetoothDevice.EXTRA_NAME)
+                            ?: (try { it.name } catch (e: SecurityException) { null })
+                        val rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE)
+                            ?.toInt()?.takeIf { it != Short.MIN_VALUE.toInt() }
+                        rssi?.let { r -> lastRssi[it.address] = r }
+                        Timber.tag(TAG).d("ACTION_FOUND addr=${it.address} name=$name rssi=$rssi")
                         if (matchesDeviceFilter(name) && !seenAddresses.contains(it.address)) {
                             seenAddresses.add(it.address)
-                            devices.add(BtDevice(it.address, name ?: it.address, false))
+                            devices.add(BtDevice(it.address, name ?: it.address, false, rssi))
+                            onUpdate?.invoke(devices.toList())
+                        }
+                    }
+                }
+                BluetoothDevice.ACTION_NAME_CHANGED -> {
+                    val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    val name = intent.getStringExtra(BluetoothDevice.EXTRA_NAME)
+                    device?.let { d ->
+                        // 名字解析出来后更新显示名（比如 Qring_50C6 → Qring_50C6_BLE）
+                        val idx = devices.indexOfFirst { it.address == d.address }
+                        if (idx >= 0 && name != null && matchesDeviceFilter(name)) {
+                            devices[idx] = devices[idx].copy(name = name)
                             onUpdate?.invoke(devices.toList())
                         }
                     }
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                    // 扫描结束，可以重新启动或通知 UI
+                    // 系统扫描约 12 秒自动结束；只要弹窗还开着就续扫。
+                    // 立即重启会被蓝牙栈拒绝（还在清理上一轮），所以延迟并重试。
+                    if (running) {
+                        scope.launch {
+                            // MIUI 在扫描结束后 ~10s 内拒绝再次 startDiscovery，延长重试窗口
+                            var attempt = 1
+                            while (attempt <= 8 && running) {
+                                delay(2000L * attempt)
+                                if (!running) return@launch
+                                val ok = try {
+                                    bluetoothAdapter?.startDiscovery() == true
+                                } catch (e: Exception) {
+                                    false
+                                }
+                                if (ok) return@launch
+                                attempt++
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -142,10 +195,12 @@ class PrinterDiscovery(private val context: Context) {
             // 注册广播接收器
             val filter = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_FOUND)
+                addAction(BluetoothDevice.ACTION_NAME_CHANGED)
                 addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(discoveryReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                // 系统蓝牙的 ACTION_FOUND 广播，NOT_EXPORTED 收不到，必须 EXPORTED
+                context.registerReceiver(discoveryReceiver, filter, Context.RECEIVER_EXPORTED)
             } else {
                 context.registerReceiver(discoveryReceiver, filter)
             }
@@ -162,6 +217,9 @@ class PrinterDiscovery(private val context: Context) {
             return false
         }
     }
+
+    /** 指定设备最近一次扫描到的信号强度（dBm），没有则 null */
+    fun rssiFor(address: String): Int? = lastRssi[address]
 
     fun stop() {
         if (!running) return

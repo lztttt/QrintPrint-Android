@@ -56,7 +56,8 @@ class TemplateRepository(private val context: Context) {
             minLength = doc.minLength,
             updatedAt = System.currentTimeMillis(),
             thumbnailPath = thumbPath,
-            elements = elements
+            elements = elements,
+            landscape = doc.landscape
         )
 
         // 保存 JSON 索引
@@ -87,6 +88,7 @@ class TemplateRepository(private val context: Context) {
         val record = loadTemplate(id) ?: return@withContext null
         val doc = CanvasDoc()
         doc.minLength = record.minLength
+        doc.landscape = record.landscape
         doc.elements = record.elements.map { templateDataToElement(it) }.toMutableList()
         Pair(doc, record)
     }
@@ -130,8 +132,12 @@ class TemplateRepository(private val context: Context) {
                 put("text", el.text)
                 put("imageUri", el.imageUri)
                 put("ditherMode", el.ditherMode)
+                put("ditherThreshold", el.ditherThreshold)
                 put("codeContent", el.codeContent)
                 put("codeTypeIndex", el.codeTypeIndex)
+                put("rotation", el.rotation)
+                put("flipH", el.flipH)
+                put("flipV", el.flipV)
                 // textOptions
                 val opts = JSONObject().apply {
                     put("fontFamily", el.textOptions.fontFamily)
@@ -155,6 +161,7 @@ class TemplateRepository(private val context: Context) {
             put("updatedAt", record.updatedAt)
             put("thumbnailPath", record.thumbnailPath)
             put("elements", elementsArr)
+            put("landscape", record.landscape)
         }.toString()
     }
 
@@ -194,12 +201,19 @@ class TemplateRepository(private val context: Context) {
                     textOptions = textOptions,
                     imageUri = elObj.optString("imageUri", ""),
                     ditherMode = elObj.optInt("ditherMode", 1),
+                    ditherThreshold = elObj.optInt("ditherThreshold", 128),
                     codeContent = elObj.optString("codeContent", ""),
-                    codeTypeIndex = elObj.optInt("codeTypeIndex", 0)
+                    codeTypeIndex = elObj.optInt("codeTypeIndex", 0),
+                    rotation = elObj.optInt("rotation", 0),
+                    flipH = elObj.optBoolean("flipH", false),
+                    flipV = elObj.optBoolean("flipV", false)
                 )
             )
         }
 
-        return TemplateRecord(id, name, minLength, updatedAt, thumbPath, elements)
+        return TemplateRecord(
+            id, name, minLength, updatedAt, thumbPath, elements,
+            landscape = obj.optBoolean("landscape", false)
+        )
     }
 }

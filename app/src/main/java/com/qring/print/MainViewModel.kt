@@ -38,11 +38,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val needsPermission: StateFlow<Boolean> = _needsPermission.asStateFlow()
 
     init {
-        printerConnection.init(application)
-        // 启动自动重连
-        viewModelScope.launch {
-            printerConnection.autoReconnect()
-        }
+        // 自动重连已在 MainActivity 里统一处理，这里不再重复
     }
 
     fun refreshPairedDevices() {
@@ -66,10 +62,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!_bluetoothEnabled.value) return
         val paired = discovery.listPairedDevices()
         _scannedDevices.value = paired
-        _isScanning.value = discovery.start(paired) { devices ->
-            _scannedDevices.value = devices
-            onDevicesFound(devices)
-        }
+    _isScanning.value = discovery.start(paired) { devices ->
+        _scannedDevices.value = devices
+        onDevicesFound(devices)
+    }
     }
 
     fun stopScan() {
@@ -81,6 +77,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             printerConnection.connect(address)
         }
+    }
+
+    /** 上次连接过的打印机地址，用于一键重连 */
+    val lastDeviceId: String?
+        get() = printerConnection.lastDeviceId()
+
+    /** 上次连接过的打印机名称 */
+    val lastDeviceName: String?
+        get() = printerConnection.lastDeviceName()
+
+    /** 一键重连上次的设备 */
+    fun connectLastDevice() {
+        val id = printerConnection.lastDeviceId() ?: return
+        connectDevice(id)
+    }
+
+    /** 指定设备最近一次扫描到的信号强度（dBm） */
+    fun deviceRssi(address: String): Int? = discovery.rssiFor(address)
+
+    /** 设备别名 */
+    fun deviceAlias(address: String): String? =
+        com.qring.print.data.DeviceAliasStore.get(getApplication(), address)
+
+    fun setDeviceAlias(address: String, alias: String) {
+        com.qring.print.data.DeviceAliasStore.set(getApplication(), address, alias)
     }
 
     override fun onCleared() {
