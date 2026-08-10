@@ -43,6 +43,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,6 +89,10 @@ fun CanvasView(
     // 横排时合成图已旋转，显示宽度对应的是原画布高度
     val compositeWidth = compositeBitmap?.width ?: 384
     val scale = if (landscape) canvasWidthDp / maxOf(1, compositeWidth) else canvasWidthDp / 384f
+
+    // 用 rememberUpdatedState 拿到最新的 scale，避免 scale 变化时 pointerInput 重启
+    val currentScale by rememberUpdatedState(scale)
+    val currentLandscape by rememberUpdatedState(landscape)
 
 
 
@@ -145,14 +150,14 @@ fun CanvasView(
                     .clickable { onSelect(el.id) }
                     .then(
                         if (isSelected) {
-                            // key 必须包含 landscape，否则切换横竖排后手势仍用旧的映射
-                            Modifier.pointerInput(el.id, landscape, scale) {
+                            // key 只含 el.id 和 landscape（切换横竖排时重启）；scale 用 rememberUpdatedState 避免拖拽中重启
+                            Modifier.pointerInput(el.id, landscape) {
                                 detectDragGestures { change, dragAmount ->
                                     change.consume()
-                                    val dxDot = (dragAmount.x / scale).roundToInt()
-                                    val dyDot = (dragAmount.y / scale).roundToInt()
+                                    val dxDot = (dragAmount.x / currentScale).roundToInt()
+                                    val dyDot = (dragAmount.y / currentScale).roundToInt()
                                     if (dxDot != 0 || dyDot != 0) {
-                                        if (landscape) {
+                                        if (currentLandscape) {
                                             // 横排显示是竖排旋转 90° 的结果，屏幕位移要反向映射回画布坐标
                                             onMove(el.id, dyDot, -dxDot)
                                         } else {

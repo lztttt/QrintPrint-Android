@@ -223,12 +223,13 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
         val doc = _uiState.value.doc
         val sel = doc.selected() ?: return
         if (doc.landscape) {
-            // 横排：dotX 方向限制在 0..384（即打印宽度方向），dotY 方向可无限延伸
+            // 横排：dotX 方向限制在 0..384（即打印宽度方向），dotY 方向可无限延伸（含负值）
             sel.dotX = (sel.dotX + dx).coerceIn(0, 384 - sel.dotW)
-            sel.dotY = maxOf(0, sel.dotY + dy)
+            sel.dotY = sel.dotY + dy
         } else {
-            sel.dotX = maxOf(0, sel.dotX + dx)
-            sel.dotY = maxOf(0, sel.dotY + dy)
+            // 竖排：不限制移出左右、上边框，边框外的部分由 blitBinary 裁剪不渲染
+            sel.dotX = sel.dotX + dx
+            sel.dotY = sel.dotY + dy
         }
         bump()          // 选框实时跟手
         updateComposite() // 画布实时合成（取消旧任务防堆积）
