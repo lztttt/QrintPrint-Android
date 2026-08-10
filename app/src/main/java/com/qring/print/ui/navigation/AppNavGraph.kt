@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -29,7 +30,11 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -39,8 +44,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,6 +75,7 @@ import com.qring.print.ui.template.TemplateScreen
 import com.qring.print.ui.theme.QringPalette
 import com.qring.print.ui.theme.ThemeManager
 import com.qring.print.ui.textprint.TextPrintScreen
+import kotlinx.coroutines.launch
 
 // ── 路由常量 ──────────────────────────────────────────────
 object Routes {
@@ -279,6 +287,11 @@ fun MineScreen(navController: NavHostController) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        // 检查更新
+        UpdateCard()
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         // 关于（内联展开）
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -312,6 +325,130 @@ fun MineScreen(navController: NavHostController) {
                     fontSize = 11.sp,
                     color = QringPalette.textSecondary
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateCard() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val updateManager = androidx.compose.runtime.remember {
+        com.qring.print.data.UpdateManager(context.applicationContext as android.app.Application)
+    }
+    val updateState by updateManager.state.collectAsState()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "版本更新",
+                    color = QringPalette.textPrimary,
+                    fontSize = 15.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "当前 v${BuildConfig.VERSION_NAME}",
+                    fontSize = 12.sp,
+                    color = QringPalette.textSecondary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            when (val st = updateState) {
+                is com.qring.print.data.UpdateManager.UpdateState.Idle -> {
+                    TextButton(onClick = {
+                        scope.launch { updateManager.checkForUpdate() }
+                    }) {
+                        Text("检查更新", fontSize = 13.sp)
+                    }
+                }
+                is com.qring.print.data.UpdateManager.UpdateState.Checking -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = QringPalette.brand
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在检查...", fontSize = 13.sp, color = QringPalette.textSecondary)
+                    }
+                }
+                is com.qring.print.data.UpdateManager.UpdateState.UpToDate -> {
+                    Text("已是最新版本 ✓", fontSize = 13.sp, color = QringPalette.textSecondary)
+                }
+                is com.qring.print.data.UpdateManager.UpdateState.Available -> {
+                    Column {
+                        Text(
+                            text = "发现新版本 v${st.info.version}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = QringPalette.brand
+                        )
+                        if (st.info.releaseNotes.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = st.info.releaseNotes.take(200),
+                                fontSize = 12.sp,
+                                color = QringPalette.textSecondary
+                            )
+                        }
+                        val sizeMB = st.info.downloadSize / (1024.0 * 1024.0)
+                        if (sizeMB > 0) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "大小: ${String.format("%.1f", sizeMB)} MB",
+                                fontSize = 11.sp,
+                                color = QringPalette.textSecondary
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                scope.launch { updateManager.downloadAndInstall(st.info) }
+                            },
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = QringPalette.brand
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("下载并安装", fontSize = 13.sp)
+                        }
+                    }
+                }
+                is com.qring.print.data.UpdateManager.UpdateState.Downloading -> {
+                    Column {
+                        Text("下载中 ${st.progress}%", fontSize = 13.sp, color = QringPalette.textPrimary)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { st.progress / 100f },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = QringPalette.brand
+                        )
+                    }
+                }
+                is com.qring.print.data.UpdateManager.UpdateState.ReadyToInstall -> {
+                    Text("下载完成，请按系统提示安装", fontSize = 13.sp, color = QringPalette.brand)
+                }
+                is com.qring.print.data.UpdateManager.UpdateState.Error -> {
+                    Text(
+                        text = st.message,
+                        fontSize = 12.sp,
+                        color = androidx.compose.ui.graphics.Color.Red
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TextButton(onClick = {
+                        scope.launch { updateManager.checkForUpdate() }
+                    }) {
+                        Text("重试", fontSize = 13.sp)
+                    }
+                }
             }
         }
     }
