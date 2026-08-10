@@ -85,31 +85,38 @@ fun CanvasView(
     onMove: (String, Int, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val density = LocalDensity.current
-    // 横排时合成图已旋转，显示宽度对应的是原画布高度
-    val compositeWidth = compositeBitmap?.width ?: 384
-    val scale = if (landscape) canvasWidthDp / maxOf(1, compositeWidth) else canvasWidthDp / 384f
+    // scale 始终基于 384（打印机宽度），不随 contentHeight 变化
+    // 这样横排时画布高度固定、元素不会因拖拽而缩放
+    val scale = canvasWidthDp / 384f
 
-    // 用 rememberUpdatedState 拿到最新的 scale，避免 scale 变化时 pointerInput 重启
+    // 用 rememberUpdatedState 拿到最新的值，避免 pointerInput 重启
     val currentScale by rememberUpdatedState(scale)
     val currentLandscape by rememberUpdatedState(landscape)
 
+    // 合成图显示尺寸（用显式尺寸代替 FillWidth，横排时高度固定）
+    val bmpW = compositeBitmap?.width ?: 384
+    val bmpH = compositeBitmap?.height ?: 384
+    val displayWDp = bmpW * scale
+    val displayHDp = bmpH * scale
 
+    // Box 高度：横排固定为 384*scale，竖排跟随内容
+    val boxHeightDp = if (landscape) (384 * scale) else displayHDp
 
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .height(boxHeightDp.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(QringPalette.paper)
             .border(1.dp, QringPalette.paperEdge, RoundedCornerShape(12.dp))
     ) {
-        // 合成图
+        // 合成图（显式尺寸，横排高度 = 384*scale 固定不变）
         if (compositeBitmap != null) {
             Image(
                 bitmap = compositeBitmap.asImageBitmap(),
                 contentDescription = "画布预览",
-                modifier = Modifier.fillMaxWidth(),
-                contentScale = ContentScale.FillWidth
+                modifier = Modifier.size(width = displayWDp.dp, height = displayHDp.dp),
+                contentScale = ContentScale.FillBounds
             )
         }
 
@@ -122,7 +129,7 @@ fun CanvasView(
             val boxW: Int
             val boxH: Int
             if (landscape) {
-                val h = compositeWidth // 原画布高度
+                val h = bmpW // 原画布高度（= 旋转后 bitmap 宽度）
                 boxX = h - el.dotY - el.dotH
                 boxY = el.dotX
                 boxW = el.dotH
