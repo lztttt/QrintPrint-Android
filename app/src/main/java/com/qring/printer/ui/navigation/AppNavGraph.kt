@@ -1,4 +1,4 @@
-package com.qring.printer.ui.navigation
+﻿﻿package com.qring.printer.ui.navigation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -425,7 +425,7 @@ fun MineScreen(navController: NavHostController) {
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                InfoRow("开源地址", "github.com/lztttt/QrintPrint/tree/qringprint-android")
+                InfoRow("开源地址", "github.com/lztttt/QrintPrint-Android")
                 InfoRow("原项目", "github.com/Thisko/QrintPrint")
                 InfoRow("开源协议", "MIT License")
                 InfoRow("开发语言", "Kotlin · Jetpack Compose")
@@ -676,10 +676,10 @@ fun AboutScreen(navController: NavHostController) {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "https://github.com/lztttt/QrintPrint/tree/qringprint-android",
+                        text = "https://github.com/lztttt/QrintPrint-Android",
                         fontSize = 13.sp,
                         color = QringPalette.brand,
-                        modifier = Modifier.clickable { openUrl("https://github.com/lztttt/QrintPrint/tree/qringprint-android") }
+                        modifier = Modifier.clickable { openUrl("https://github.com/lztttt/QrintPrint-Android") }
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(

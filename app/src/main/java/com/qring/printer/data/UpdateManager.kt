@@ -30,7 +30,7 @@ class UpdateManager(private val app: Application) {
     companion object {
         // 从 BuildConfig 读取，或硬编码
         val GITHUB_OWNER = "lztttt"
-        val GITHUB_REPO = "QrintPrint"
+        val GITHUB_REPO = "QrintPrint-Android"
         val CURRENT_VERSION = com.qring.printer.BuildConfig.VERSION_NAME
     }
 
