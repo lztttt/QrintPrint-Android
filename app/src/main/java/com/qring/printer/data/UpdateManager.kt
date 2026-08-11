@@ -102,30 +102,11 @@ class UpdateManager(private val app: Application) {
         try {
             val apkFile = withContext(Dispatchers.IO) {
                 val updateDir = File(app.cacheDir, "updates").apply { mkdirs() }
+                // 清理旧 APK
+                updateDir.listFiles()?.forEach { it.delete() }
                 val apk = File(updateDir, "qringprint-${info.version}.apk")
 
-                val url = URL(info.downloadUrl)
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 30000
-                    readTimeout = 60000
-                    setRequestProperty("User-Agent", "QringPrint/$CURRENT_VERSION")
-                    instanceFollowRedirects = true
-                }
-
-                val total = conn.contentLengthLong.coerceAtLeast(1)
-                conn.inputStream.use { input ->
-                    apk.outputStream().use { output ->
-                        val buffer = ByteArray(8192)
-                        var bytesRead: Int
-                        var downloaded = 0L
-                        while (input.read(buffer).also { bytesRead = it } > 0) {
-                            output.write(buffer, 0, bytesRead)
-                            downloaded += bytesRead
-                            val progress = (downloaded * 100 / total).toInt()
-                            _state.value = UpdateState.Downloading(progress)
-                        }
-                    }
-                }
+                downloadApk(info.downloadUrl, apk, info.downloadSize)
                 apk
             }
 
@@ -137,6 +118,74 @@ class UpdateManager(private val app: Application) {
     }
 
     /**
+     * 下载 APK 文件，带重定向处理和大小校验。
+     */
+    private fun downloadApk(urlStr: String, destFile: File, expectedSize: Long) {
+        var currentUrl = urlStr
+        var redirectCount = 0
+
+        while (redirectCount < 5) {
+            val url = URL(currentUrl)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 30000
+                readTimeout = 120000
+                setRequestProperty("User-Agent", "QringPrint/$CURRENT_VERSION")
+                instanceFollowRedirects = false  // 手动处理重定向，避免跨协议问题
+            }
+
+            val code = conn.responseCode
+
+            // 手动跟随重定向
+            if (code in 300..399) {
+                val location = conn.getHeaderField("Location")
+                conn.disconnect()
+                if (location.isNullOrEmpty()) throw Exception("重定向地址为空")
+                currentUrl = if (location.startsWith("http")) location else {
+                    URL(url, location).toString()  // 处理相对路径
+                }
+                redirectCount++
+                continue
+            }
+
+            if (code != 200) {
+                conn.disconnect()
+                throw Exception("下载失败: HTTP $code")
+            }
+
+            val total = conn.contentLengthLong.let { if (it > 0) it else expectedSize }
+            conn.inputStream.use { input ->
+                destFile.outputStream().use { output ->
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+                    var downloaded = 0L
+                    while (input.read(buffer).also { bytesRead = it } > 0) {
+                        output.write(buffer, 0, bytesRead)
+                        downloaded += bytesRead
+                        if (total > 0) {
+                            val progress = (downloaded * 100 / total).toInt().coerceIn(0, 100)
+                            _state.value = UpdateState.Downloading(progress)
+                        }
+                    }
+                }
+            }
+            conn.disconnect()
+
+            // 校验文件大小
+            val actualSize = destFile.length()
+            if (expectedSize > 0 && actualSize != expectedSize) {
+                // GitHub 的 size 可能不准确，只在校验明显偏小时报错
+                if (actualSize < expectedSize * 0.9) {
+                    destFile.delete()
+                    throw Exception("下载文件不完整: ${actualSize}/${expectedSize}")
+                }
+            }
+            return
+        }
+        throw Exception("重定向次数过多")
+    }
+
+    /**
      * 触发系统安装 Intent。
      */
     private fun installApk(apkFile: File) {
@@ -145,8 +194,16 @@ class UpdateManager(private val app: Application) {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            // 某些设备需要额外权限
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10+ 不需要 REQUEST_INSTALL_PACKAGES 权限
+            }
         }
-        app.startActivity(intent)
+        try {
+            app.startActivity(intent)
+        } catch (e: Exception) {
+            _state.value = UpdateState.Error("无法启动安装器: ${e.message}")
+        }
     }
 
     /**

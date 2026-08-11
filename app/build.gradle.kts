@@ -22,6 +22,8 @@ android {
             storePassword = "qringprint123"
             keyAlias = "qring"
             keyPassword = "qringprint123"
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
