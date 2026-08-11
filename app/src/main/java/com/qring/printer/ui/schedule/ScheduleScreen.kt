@@ -1,4 +1,4 @@
-﻿﻿package com.qring.printer.ui.schedule
+﻿package com.qring.printer.ui.schedule
 
 import android.app.Application
 import android.graphics.Bitmap

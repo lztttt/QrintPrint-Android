@@ -1,4 +1,4 @@
-﻿﻿package com.qring.printer.ui.navigation
+﻿package com.qring.printer.ui.navigation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
