@@ -1,4 +1,4 @@
-﻿*.apk
+﻿﻿*.apk
 *.aab
 *.ap_
 *.dex
@@ -41,6 +41,12 @@ Thumbs.db
 
 # Gradle wrapper zip
 gradle.zip
+
+# Local Gradle installation
+gradle-8.10/
+
+# Source icon asset (not needed in repo)
+foreground.png
 
 # Misc
 .cxx/

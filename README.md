@@ -152,6 +152,10 @@ cd <项目根> && gradlew assembleDebug
 
 QringPrint 是个人开发的第三方客户端，与错题小印官方无关。打印机通信协议是通过对官方 App 的分析整理得到的，**仅供学习参考，严禁商用**；如你认为此实现侵害了你的权益，请联系作者下架。
 
+## 致谢
+
+本分支基于 [Thisko](https://github.com/Thisko) 的开源项目 [QrintPrint (HarmonyOS / ArkTS)](https://github.com/Thisko/QrintPrint) 移植而来。感谢原作者对打印机协议的逆向分析和开源贡献，没有他的工作就不会有这个 Android 版本。
+
 ## 开源协议
 
 [MIT License](LICENSE)

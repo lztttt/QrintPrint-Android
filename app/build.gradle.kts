@@ -5,21 +5,31 @@ plugins {
 }
 
 android {
-    namespace = "com.qring.print"
+    namespace = "com.qring.printer"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.qring.print"
+        applicationId = "com.qring.printer"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("../qring-release.jks")
+            storePassword = "qringprint123"
+            keyAlias = "qring"
+            keyPassword = "qringprint123"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
