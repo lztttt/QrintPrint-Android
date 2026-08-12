@@ -6,5 +6,5 @@
     <color name="status_offline">#FFD8DCE3</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-    <color name="launcher_background">#FF7C5CE6</color>
+    <color name="launcher_background">#FFFFFFFF</color>
 </resources>
