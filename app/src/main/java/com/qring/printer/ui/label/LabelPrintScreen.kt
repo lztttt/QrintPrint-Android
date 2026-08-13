@@ -81,6 +81,7 @@ import com.qring.printer.protocol.TextRenderOptions
 import com.qring.printer.protocol.bitmapToGray
 import com.qring.printer.protocol.ditherToBinary
 import com.qring.printer.protocol.DitherMode
+import com.qring.printer.ui.common.PrintWarningDialog
 import com.qring.printer.ui.theme.QringPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -566,6 +567,9 @@ fun LabelPrintScreen(navController: NavHostController) {
         }
         }
     }
+
+    // 打印前状态检查弹窗
+    PrintWarningDialog(onGoBack = { navController.popBackStack() })
 }
 
 // ── 预览卡片 ─────────────────────────────────────────────

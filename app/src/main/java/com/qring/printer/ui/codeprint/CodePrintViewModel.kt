@@ -114,19 +114,6 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /** 快速模板填充 */
-    fun applyTemplate(template: com.qring.printer.ui.codeprint.CodeTemplate) {
-        when (template) {
-            com.qring.printer.ui.codeprint.CodeTemplate.TEXT -> {
-                _uiState.value = _uiState.value.copy(
-                    content = "",
-                    codeTypeIndex = 0
-                )
-                updatePreview()
-            }
-            else -> { /* handled via dialog in Screen */ }
-        }
-    }
-
     /** URL 模板 */
     fun applyUrlTemplate(url: String) {
         val finalUrl = url.trim().let { if (it.isEmpty()) "" else it }

@@ -280,6 +280,29 @@ fun invertBinary(
     return out
 }
 
+/**
+ * 二值位图等比缩放到指定宽度。
+ * 最近邻采样，返回 (新位图, 新宽, 新高)。
+ * 如果目标宽度与源宽度一致则原样返回。
+ */
+fun scaleBinaryToWidth(
+    binary: ByteArray, width: Int, height: Int, targetWidth: Int
+): Triple<ByteArray, Int, Int> {
+    if (width == targetWidth || targetWidth <= 0) return Triple(binary, width, height)
+    val targetH = maxOf(1, Math.round(height.toFloat() * targetWidth / width))
+    val out = ByteArray(targetWidth * targetH)
+    val xRatio = width.toFloat() / targetWidth
+    val yRatio = height.toFloat() / targetH
+    for (y in 0 until targetH) {
+        val srcY = (y.toFloat() * yRatio).toInt().coerceIn(0, height - 1)
+        for (x in 0 until targetWidth) {
+            val srcX = (x.toFloat() * xRatio).toInt().coerceIn(0, width - 1)
+            out[y * targetWidth + x] = binary[srcY * width + srcX]
+        }
+    }
+    return Triple(out, targetWidth, targetH)
+}
+
 // ── 便捷封装 ──────────────────────────────────────────────
 
 /** 便捷封装：Bitmap → 光栅。文字打印走这条，固定用纯阈值不抖动 */

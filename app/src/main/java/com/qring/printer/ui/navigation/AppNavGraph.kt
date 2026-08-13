@@ -70,6 +70,8 @@ import com.qring.printer.BuildConfig
 import com.qring.printer.R
 import com.qring.printer.model.HistoryRecord
 import com.qring.printer.ui.codeprint.CodePrintScreen
+import com.qring.printer.ui.common.MarkdownText
+import com.qring.printer.ui.common.BenchmarkCard
 import com.qring.printer.ui.customprint.CustomPrintScreen
 import com.qring.printer.ui.history.HistoryScreen
 import com.qring.printer.ui.home.HomeScreen
@@ -93,6 +95,9 @@ object Routes {
     const val TODO = "todo"
     const val WORDBOOK = "wordbook"
     const val MATH = "math"
+    const val TABLE_PRINT = "table_print"
+    const val MD_PRINT = "md_print"
+    const val WRONG_BOOK = "wrong_book"
     const val ABOUT = "about"
 }
 
@@ -140,6 +145,8 @@ fun AppNavHost() {
                         "custom" -> navController.navigate(Routes.CUSTOM_PRINT)
                         "schedule" -> navController.navigate(Routes.SCHEDULE)
                         "todo" -> navController.navigate(Routes.TODO)
+                        "wrongbook" -> navController.navigate(Routes.WRONG_BOOK)
+                        else -> navController.navigate(Routes.WRONG_BOOK)
                     }
                 }
             )
@@ -173,6 +180,15 @@ fun AppNavHost() {
         }
         composable(Routes.MATH) {
             com.qring.printer.ui.math.MathPrintScreen(navController = navController)
+        }
+        composable(Routes.TABLE_PRINT) {
+            com.qring.printer.ui.tableprint.TablePrintScreen(navController = navController)
+        }
+        composable(Routes.MD_PRINT) {
+            com.qring.printer.ui.mdprint.MarkdownPrintScreen(navController = navController)
+        }
+        composable(Routes.WRONG_BOOK) {
+            com.qring.printer.ui.wrongbook.WrongBookScreen(navController = navController)
         }
         composable(Routes.ABOUT) {
             AboutScreen(navController = navController)
@@ -213,10 +229,10 @@ private fun StartupUpdateCheck() {
             text = {
                 Column {
                     if (info.releaseNotes.isNotBlank()) {
-                        Text(
-                            text = info.releaseNotes.take(300),
-                            fontSize = 13.sp,
-                            color = QringPalette.textSecondary
+                        MarkdownText(
+                            markdown = info.releaseNotes,
+                            baseFontSize = 13,
+                            baseColor = QringPalette.textSecondary
                         )
                     }
                     val sizeMB = info.downloadSize / (1024.0 * 1024.0)
@@ -442,6 +458,11 @@ fun MineScreen(navController: NavHostController) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        // 基准测试页
+        BenchmarkCard()
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         // 更新日志
         ChangelogCard()
     }
@@ -510,10 +531,10 @@ private fun UpdateCard() {
                         )
                         if (st.info.releaseNotes.isNotBlank()) {
                             Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = st.info.releaseNotes.take(200),
-                                fontSize = 12.sp,
-                                color = QringPalette.textSecondary
+                            MarkdownText(
+                                markdown = st.info.releaseNotes,
+                                baseFontSize = 12,
+                                baseColor = QringPalette.textSecondary
                             )
                         }
                         val sizeMB = st.info.downloadSize / (1024.0 * 1024.0)
@@ -815,11 +836,10 @@ private fun ChangelogCard() {
                     }
                     if (release.notes.isNotBlank() && release.notes != "暂无说明") {
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = release.notes.take(300),
-                            fontSize = 12.sp,
-                            color = QringPalette.textSecondary,
-                            maxLines = 8
+                        MarkdownText(
+                            markdown = release.notes,
+                            baseFontSize = 12,
+                            baseColor = QringPalette.textSecondary
                         )
                     }
                 }

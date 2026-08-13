@@ -92,6 +92,7 @@ import com.qring.printer.protocol.DitherMode
 import com.qring.printer.protocol.renderTextToPixelMap
 import com.qring.printer.protocol.TextRenderOptions
 import com.qring.printer.ui.common.FontList
+import com.qring.printer.ui.common.PrintWarningDialog
 import com.qring.printer.ui.theme.QringPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -728,6 +729,9 @@ fun TodoPrintScreen(navController: NavHostController) {
             }
         )
     }
+
+    // 打印前状态检查弹窗
+    PrintWarningDialog(onGoBack = { navController.popBackStack() })
 }
 
 // ── 预览卡片 ─────────────────────────────────────────────

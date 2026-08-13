@@ -1,4 +1,4 @@
-﻿package com.qring.printer.ui.wordbook
+package com.qring.printer.ui.wordbook
 
 import android.app.Application
 import android.graphics.Bitmap

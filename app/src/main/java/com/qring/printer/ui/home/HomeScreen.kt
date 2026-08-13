@@ -36,6 +36,9 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -149,7 +152,10 @@ fun HomeScreen(
                 onCalendarClick = { navController.navigate(Routes.CALENDAR) },
                 onTodoClick = { navController.navigate(Routes.TODO) },
                 onWordbookClick = { navController.navigate(Routes.WORDBOOK) },
-                onMathClick = { navController.navigate(Routes.MATH) }
+                onMathClick = { navController.navigate(Routes.MATH) },
+                onTableClick = { navController.navigate(Routes.TABLE_PRINT) },
+                onMdClick = { navController.navigate(Routes.MD_PRINT) },
+                onWrongBookClick = { navController.navigate(Routes.WRONG_BOOK) }
             )
         }
     }
@@ -388,7 +394,10 @@ onLabelClick: () -> Unit,
 onCalendarClick: () -> Unit,
 onTodoClick: () -> Unit,
 onWordbookClick: () -> Unit = {},
-onMathClick: () -> Unit = {}
+onMathClick: () -> Unit = {},
+onTableClick: () -> Unit = {},
+    onMdClick: () -> Unit = {},
+    onWrongBookClick: () -> Unit = {}
 ) {
 val actions = listOf(
 QuickAction2("schedule", "课程表", "手动编辑课程表", com.qring.printer.ui.theme.TILE_MINT, Icons.Default.DateRange, onScheduleClick),
@@ -397,6 +406,9 @@ QuickAction2("calendar", "日程", "系统日程打印", com.qring.printer.ui.th
 QuickAction2("todo", "Todo", "待办事项打印", com.qring.printer.ui.theme.TILE_AMBER, Icons.Default.Checklist, onTodoClick),
 QuickAction2("wordbook", "单词本", "下载并打印单词", Color(0xFFB4A7D6), Icons.Default.MenuBook, onWordbookClick),
 QuickAction2("math", "口算题", "自动生成口算", Color(0xFF6FCF97), Icons.Default.Calculate, onMathClick),
+QuickAction2("table", "表格", "表格打印", Color(0xFF8FD9B6), Icons.Default.TableChart, onTableClick),
+QuickAction2("md", "文档", "Markdown打印", Color(0xFF9CC4EF), Icons.Default.Article, onMdClick),
+    QuickAction2("wrongbook", "错题本", "拍照→增强→打印", Color(0xFFF6C870), Icons.Default.DocumentScanner, onWrongBookClick),
 )
 
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.GRID_GAP.dp)) {

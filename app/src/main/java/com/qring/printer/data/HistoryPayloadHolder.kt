@@ -1,34 +1,44 @@
 package com.qring.printer.data
 
+import com.qring.printer.model.HistoryRecord
+
 /**
- * 历史记录重打的 payload 中转站。
- * 从历史页点击重打时，把 payload 存到这里；打印页在 aboutToAppear/init 时读取并清空。
+ * 历史记录重打的中转站。
+ * 从历史页点击重打时，把记录存到这里；打印页在 init 时读取并清空。
  */
 object HistoryPayloadHolder {
-    private var pendingPayload: String? = null
-    private var pendingType: String? = null
+    private var pendingRecord: HistoryRecord? = null
 
+    fun setRecord(record: HistoryRecord) {
+        pendingRecord = record
+    }
+
+    /** 兼容旧调用 */
     fun setPayload(type: String, payload: String) {
-        pendingType = type
-        pendingPayload = payload
+        pendingRecord = HistoryRecord(
+            id = "", typeName = type, payload = payload,
+            thumbnailPath = "", createdAt = 0
+        )
+    }
+
+    fun consumeRecord(): HistoryRecord? {
+        val r = pendingRecord
+        pendingRecord = null
+        return r
     }
 
     fun consumePayload(): Pair<String, String>? {
-        val type = pendingType
-        val payload = pendingPayload
-        pendingType = null
-        pendingPayload = null
-        return if (type != null && payload != null) Pair(type, payload) else null
+        val r = pendingRecord
+        pendingRecord = null
+        return r?.let { Pair(it.typeName, it.payload) }
     }
 
     fun peekPayload(): Pair<String, String>? {
-        val type = pendingType
-        val payload = pendingPayload
-        return if (type != null && payload != null) Pair(type, payload) else null
+        val r = pendingRecord
+        return r?.let { Pair(it.typeName, it.payload) }
     }
 
     fun clear() {
-        pendingType = null
-        pendingPayload = null
+        pendingRecord = null
     }
 }

@@ -16,6 +16,7 @@ import com.qring.printer.protocol.DITHER_OPTIONS
 import com.qring.printer.protocol.DitherMode
 import com.qring.printer.protocol.GrayImage
 import com.qring.printer.protocol.RasterData
+import com.qring.printer.protocol.WIDTH_DOTS
 import com.qring.printer.protocol.bitmapToGray
 import com.qring.printer.protocol.binaryToPreviewBitmap
 import com.qring.printer.protocol.createBinaryCanvas
@@ -23,6 +24,7 @@ import com.qring.printer.protocol.decodeSourceToPrintWidth
 import com.qring.printer.protocol.ditherToBinary
 import com.qring.printer.protocol.packBinaryToRaster
 import com.qring.printer.protocol.rotateBinary
+import com.qring.printer.protocol.scaleBinaryToWidth
 import com.qring.printer.protocol.flipBinaryHorizontal
 import com.qring.printer.protocol.flipBinaryVertical
 import com.qring.printer.protocol.invertBinary
@@ -50,6 +52,12 @@ data class ImagePrintUiState(
     val resultMessage: String = "",
     val resultOk: Boolean = false,
     val sourceGray: GrayImage? = null,
+    // 原始灰度图（未经调整），用于对比度/亮度/锐度重新计算
+    val originalGray: GrayImage? = null,
+    // 图像预调整：对比度 -100~100，亮度 -100~100，锐度 0~100
+    val contrast: Int = 0,
+    val brightness: Int = 0,
+    val sharpness: Int = 0,
     // 旋转角度 0/90/180/270
     val rotation: Int = 0,
     // 水平翻转
@@ -111,6 +119,115 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.value = _uiState.value.copy(thickness = thickness)
     }
 
+    fun setContrast(value: Int) {
+        _uiState.value = _uiState.value.copy(contrast = value)
+        applyAdjustments()
+    }
+
+    fun setBrightness(value: Int) {
+        _uiState.value = _uiState.value.copy(brightness = value)
+        applyAdjustments()
+    }
+
+    fun setSharpness(value: Int) {
+        _uiState.value = _uiState.value.copy(sharpness = value)
+        applyAdjustments()
+    }
+
+    /**
+     * 对比度/亮度/锐度变化后，从原始灰度图重新计算 sourceGray，再重新渲染预览。
+     */
+    private fun applyAdjustments() {
+        val orig = _uiState.value.originalGray ?: return
+        val state = _uiState.value
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(busy = true)
+            try {
+                val oldPreview = _uiState.value.previewBitmap
+                val oldGray = _uiState.value.sourceGray
+                val result = withContext(Dispatchers.Default) {
+                    val adjusted = adjustGrayImage(orig, state.contrast, state.brightness, state.sharpness)
+                    val binary = ditherToBinary(adjusted, state.ditherMode, state.threshold)
+                    var w = adjusted.width
+                    var h = adjusted.height
+                    var bin = binary
+                    if (state.rotation % 360 != 0) {
+                        val (rot, nw, nh) = rotateBinary(bin, w, h, state.rotation)
+                        bin = rot; w = nw; h = nh
+                        // 旋转后宽度可能不再是 384，需要等比缩放回 384
+                        if (w != WIDTH_DOTS) {
+                            val (sb, sw, sh) = scaleBinaryToWidth(bin, w, h, WIDTH_DOTS)
+                            bin = sb; w = sw; h = sh
+                        }
+                    }
+                    if (state.flipH) bin = flipBinaryHorizontal(bin, w, h)
+                    if (state.flipV) bin = flipBinaryVertical(bin, w, h)
+                    if (state.invert) bin = invertBinary(bin, w, h)
+                    val preview = binaryToPreviewBitmap(bin, w, h, false)
+                    Pair(adjusted, preview)
+                }
+                _uiState.value = _uiState.value.copy(
+                    sourceGray = result.first,
+                    previewBitmap = result.second,
+                    busy = false
+                )
+                oldGray?.let { /* GrayImage 不需要 recycle */ }
+                oldPreview?.let { if (it != result.second) { delay(150); it.recycle() } }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(busy = false)
+            }
+        }
+    }
+
+    /**
+     * 对灰度图应用对比度、亮度、锐度调整，返回新的 GrayImage。
+     *
+     * - contrast: -100~100，正值增加对比度，负值降低
+     * - brightness: -100~100，正值变亮，负值变暗
+     * - sharpness: 0~100，0 为不锐化，值越大锐化越强
+     */
+    private fun adjustGrayImage(src: GrayImage, contrast: Int, brightness: Int, sharpness: Int): GrayImage {
+        val w = src.width
+        val h = src.height
+        val data = src.data.copyOf()
+
+        // 1. 对比度 + 亮度
+        if (contrast != 0 || brightness != 0) {
+            // contrast factor: -100→0.0, 0→1.0, 100→∞ (clip at 3.0)
+            val cFactor = if (contrast >= 0) {
+                1f + contrast / 100f * 2f
+            } else {
+                1f + contrast / 100f * 0.9f
+            }.coerceIn(0.1f, 3f)
+            val bOffset = brightness * 2.55f
+            for (i in data.indices) {
+                val v = (data[i] - 128) * cFactor + 128 + bOffset
+                data[i] = v.toInt().coerceIn(0, 255)
+            }
+        }
+
+        // 2. 锐化（简单的 3x3 卷积）
+        if (sharpness > 0) {
+            val srcCopy = data.copyOf()
+            val amount = sharpness / 100f
+            for (y in 1 until h - 1) {
+                for (x in 1 until w - 1) {
+                    val idx = y * w + x
+                    val center = srcCopy[idx]
+                    val up = srcCopy[idx - w]
+                    val down = srcCopy[idx + w]
+                    val left = srcCopy[idx - 1]
+                    val right = srcCopy[idx + 1]
+                    val blurred = (up + down + left + right) / 4f
+                    val sharpened = center + (center - blurred) * amount
+                    data[idx] = sharpened.toInt().coerceIn(0, 255)
+                }
+            }
+        }
+
+        return GrayImage(data, w, h)
+    }
+
     fun setRotation(degrees: Int) {
         _uiState.value = _uiState.value.copy(rotation = ((degrees % 360) + 360) % 360)
         reRender()
@@ -157,6 +274,7 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
                 _uiState.value = _uiState.value.copy(
                     previewBitmap = preview,
                     sourceGray = gray,
+                    originalGray = gray,
                     showPreview = true,
                     busy = false
                 )
@@ -189,6 +307,11 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
                     if (state.rotation % 360 != 0) {
                         val (rot, nw, nh) = rotateBinary(binary, w, h, state.rotation)
                         binary = rot; w = nw; h = nh
+                        // 旋转后宽度可能不再是 384，需要等比缩放回 384
+                        if (w != WIDTH_DOTS) {
+                            val (sb, sw, sh) = scaleBinaryToWidth(binary, w, h, WIDTH_DOTS)
+                            binary = sb; w = sw; h = sh
+                        }
                     }
                     if (state.flipH) {
                         binary = flipBinaryHorizontal(binary, w, h)
@@ -259,6 +382,11 @@ class ImagePrintViewModel(application: Application) : AndroidViewModel(applicati
                     if (state.rotation % 360 != 0) {
                         val (rot, nw, nh) = rotateBinary(binary, w, h, state.rotation)
                         binary = rot; w = nw; h = nh
+                        // 旋转后宽度可能不再是 384，需要等比缩放回 384
+                        if (w != WIDTH_DOTS) {
+                            val (sb, sw, sh) = scaleBinaryToWidth(binary, w, h, WIDTH_DOTS)
+                            binary = sb; w = sw; h = sh
+                        }
                     }
                     if (state.flipH) {
                         binary = flipBinaryHorizontal(binary, w, h)

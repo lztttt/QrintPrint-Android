@@ -14,6 +14,8 @@ class QringApp : Application() {
         FontList.initBundled(this)
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
+        } else {
+            Timber.plant(Timber.DebugTree())
         }
     }
 }

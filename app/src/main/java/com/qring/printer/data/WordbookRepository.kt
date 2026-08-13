@@ -44,8 +44,8 @@ class WordbookRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("qringprint_wordbook", Context.MODE_PRIVATE)
     private val wordbooksDir = File(context.filesDir, "wordbooks").apply { mkdirs() }
 
-    /** 用户服务器 */
-    private val serverBase = "http://47.95.211.196:8083/english-vocabulary/json"
+    /** 词库下载服务器 */
+    private val serverBase = "https://download.116384.xyz/json"
 
     /** 可用单词本列表（预置） — 顺序 + 乱序 */
     val availableBooks: List<WordbookInfo> = listOf(
@@ -84,7 +84,18 @@ class WordbookRepository(private val context: Context) {
 
     /** 下载单词本 */
     suspend fun download(book: WordbookInfo, onProgress: ((Float) -> Unit)? = null): Boolean = withContext(Dispatchers.IO) {
-        val success = tryDownload(book.url, book.id, onProgress)
+        // 乱序版：下载对应的顺序版，然后本地打乱
+        val actualUrl = if (book.id.contains("乱序")) {
+            val orderedId = book.id.replace("乱序", "顺序")
+            "$serverBase/$orderedId.json"
+        } else {
+            book.url
+        }
+        val success = tryDownload(actualUrl, book.id, onProgress)
+        if (success && book.id.contains("乱序")) {
+            // 下载成功后，打乱 JSON 数组顺序
+            shuffleLocalWordbook(book.id)
+        }
         if (success) {
             val count = getWordCount(book.id)
             prefs.edit().putInt("count_${book.id}", count).apply()
@@ -93,45 +104,102 @@ class WordbookRepository(private val context: Context) {
         success
     }
 
-    /** 实际下载逻辑 */
+    /** 打乱本地词库 JSON 数组顺序（固定种子，保证重新下载后顺序一致） */
+    private fun shuffleLocalWordbook(bookId: String) {
+        val file = File(wordbooksDir, "$bookId.json")
+        if (!file.exists()) return
+        try {
+            val arr = JSONArray(file.readText())
+            val list = mutableListOf<JSONObject>()
+            for (i in 0 until arr.length()) {
+                list.add(arr.getJSONObject(i))
+            }
+            // 用 bookId 作为固定种子，保证每次下载后乱序顺序一致
+            val rnd = java.util.Random(bookId.hashCode().toLong())
+            list.shuffle(rnd)
+            val shuffled = JSONArray()
+            list.forEach { shuffled.put(it) }
+            file.writeText(shuffled.toString())
+            Timber.tag("WordbookRepo").d("shuffled $bookId: ${list.size} words (fixed seed)")
+        } catch (e: Exception) {
+            Timber.tag("WordbookRepo").e(e, "shuffle failed: $bookId")
+        }
+    }
+
+    /** 实际下载逻辑（手动处理 HTTP 重定向） */
     private fun tryDownload(urlStr: String, bookId: String, onProgress: ((Float) -> Unit)?): Boolean {
         return try {
-            // 正确编码 URL 中的中文字符
-            val url = encodeUrl(urlStr)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 15000
-            conn.readTimeout = 60000
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "QringPrint/Android")
+            var currentUrl = encodeUrl(urlStr)
+            var redirectCount = 0
+            val maxRedirects = 5
 
-            if (conn.responseCode != 200) {
-                Timber.tag("WordbookRepo").e("download failed: HTTP ${conn.responseCode}")
-                return false
+            var conn: HttpURLConnection
+            while (true) {
+                conn = currentUrl.openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 60000
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("User-Agent", "QringPrint/Android")
+                conn.instanceFollowRedirects = false
+
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (location.isNullOrEmpty()) {
+                        Timber.tag("WordbookRepo").e("download failed: redirect without Location")
+                        return false
+                    }
+                    redirectCount++
+                    if (redirectCount > maxRedirects) {
+                        Timber.tag("WordbookRepo").e("download failed: too many redirects")
+                        return false
+                    }
+                    // 处理相对路径重定向
+                    currentUrl = if (location.startsWith("http")) {
+                        encodeUrl(location)
+                    } else {
+                        URL(currentUrl, location)
+                    }
+                    Timber.tag("WordbookRepo").d("redirect ($redirectCount) -> $currentUrl")
+                    continue
+                }
+
+                if (code != 200) {
+                    Timber.tag("WordbookRepo").e("download failed: HTTP $code")
+                    conn.disconnect()
+                    return false
+                }
+                break
             }
 
             val total = conn.contentLength.toFloat()
             val file = File(wordbooksDir, "$bookId.json")
             var lastProgress = 0f
 
-            conn.inputStream.use { input ->
-                file.outputStream().use { output ->
-                    val buf = ByteArray(8192)
-                    var read: Int
-                    var downloaded = 0L
-                    while (input.read(buf).also { read = it } > 0) {
-                        output.write(buf, 0, read)
-                        downloaded += read
-                        if (total > 0 && onProgress != null) {
-                            val progress = downloaded / total
-                            if (progress - lastProgress > 0.05f || progress >= 1f) {
-                                lastProgress = progress
-                                onProgress(progress)
+            try {
+                conn.inputStream.use { input ->
+                    file.outputStream().use { output ->
+                        val buf = ByteArray(8192)
+                        var read: Int
+                        var downloaded = 0L
+                        while (input.read(buf).also { read = it } > 0) {
+                            output.write(buf, 0, read)
+                            downloaded += read
+                            if (total > 0 && onProgress != null) {
+                                val progress = downloaded / total
+                                if (progress - lastProgress > 0.05f || progress >= 1f) {
+                                    lastProgress = progress
+                                    onProgress(progress)
+                                }
                             }
                         }
                     }
                 }
+                true
+            } finally {
+                conn.disconnect()
             }
-            true
         } catch (e: Exception) {
             Timber.tag("WordbookRepo").e(e, "download failed: $urlStr")
             false

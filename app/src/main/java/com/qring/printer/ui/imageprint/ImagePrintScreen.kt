@@ -136,6 +136,19 @@ fun ImagePrintScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             if (uiState.imageUri.isNotEmpty()) {
+                // 图像调整：对比度 + 亮度 + 锐度
+                AdjustmentCard(
+                    contrast = uiState.contrast,
+                    brightness = uiState.brightness,
+                    sharpness = uiState.sharpness,
+                    onContrastChange = viewModel::setContrast,
+                    onBrightnessChange = viewModel::setBrightness,
+                    onSharpnessChange = viewModel::setSharpness,
+                    enabled = !uiState.busy && !uiState.printing
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 // 抖动算法
                 DitherSelector(
                     selectedMode = uiState.ditherMode,
@@ -288,6 +301,108 @@ private fun PreviewCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AdjustmentCard(
+    contrast: Int,
+    brightness: Int,
+    sharpness: Int,
+    onContrastChange: (Int) -> Unit,
+    onBrightnessChange: (Int) -> Unit,
+    onSharpnessChange: (Int) -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "图像调整",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = QringPalette.textPrimary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // 对比度
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "对比度",
+                    fontSize = 13.sp,
+                    color = QringPalette.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (contrast >= 0) "+$contrast" else "$contrast",
+                    fontSize = 13.sp,
+                    color = QringPalette.textSecondary
+                )
+            }
+            Slider(
+                value = contrast.toFloat(),
+                onValueChange = { onContrastChange(Math.round(it)) },
+                valueRange = -100f..100f,
+                enabled = enabled,
+                colors = SliderDefaults.colors(
+                    thumbColor = QringPalette.brand,
+                    activeTrackColor = QringPalette.brand
+                )
+            )
+
+            // 亮度
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "亮度",
+                    fontSize = 13.sp,
+                    color = QringPalette.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (brightness >= 0) "+$brightness" else "$brightness",
+                    fontSize = 13.sp,
+                    color = QringPalette.textSecondary
+                )
+            }
+            Slider(
+                value = brightness.toFloat(),
+                onValueChange = { onBrightnessChange(Math.round(it)) },
+                valueRange = -100f..100f,
+                enabled = enabled,
+                colors = SliderDefaults.colors(
+                    thumbColor = QringPalette.brand,
+                    activeTrackColor = QringPalette.brand
+                )
+            )
+
+            // 锐度
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "锐度",
+                    fontSize = 13.sp,
+                    color = QringPalette.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "$sharpness",
+                    fontSize = 13.sp,
+                    color = QringPalette.textSecondary
+                )
+            }
+            Slider(
+                value = sharpness.toFloat(),
+                onValueChange = { onSharpnessChange(Math.round(it)) },
+                valueRange = 0f..100f,
+                enabled = enabled,
+                colors = SliderDefaults.colors(
+                    thumbColor = QringPalette.brand,
+                    activeTrackColor = QringPalette.brand
+                )
+            )
         }
     }
 }

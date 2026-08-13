@@ -69,13 +69,13 @@ private const val QUERY_TIMEOUT_MS = 1500L
 private const val QUERY_SETTLE_MS = 150L
 
 /** 等打印完成 ACK 的上限 — 基础值，实际按打印高度动态计算 */
-private const val ACK_TIMEOUT_BASE_MS = 8000L
+private const val ACK_TIMEOUT_BASE_MS = 15000L
 
 /** 每行光栅额外等待时间 */
-private const val ACK_TIMEOUT_PER_ROW_MS = 5L
+private const val ACK_TIMEOUT_PER_ROW_MS = 10L
 
-/** ACK 等待上限 */
-private const val ACK_TIMEOUT_MAX_MS = 30000L
+/** ACK 等待上限 — 与 v1.0 一致，保证大打印任务不会过早超时 */
+private const val ACK_TIMEOUT_MAX_MS = 120000L
 
 /** 打印前后走纸点行 */
 private const val FEED_BEFORE = 10
@@ -541,9 +541,21 @@ class PrinterConnection private constructor() {
         pollTimer = null
     }
 
+    /**
+     * 轮询：只查状态字节（1字节，快速可靠），不查电量。
+     * 电量查询容易和打印机内部处理冲突，只在连接和打印后查一次。
+     * 状态字节里的 ST_LOW_BATTERY 位已经能反映低电量状态。
+     */
     private suspend fun pollOnce() {
         if (socket == null || busy) return
-        refreshAll()
+        val status = queryStatus()
+        if (status != null) {
+            PrinterStatusRepository.applyStatus(status)
+            // 状态字节带低电量位时，如果当前没有电量值或电量值不为0，标记为低电量
+            if (status.lowBattery) {
+                PrinterStatusRepository.update { it.copy(batteryPercent = it.batteryPercent ?: 5) }
+            }
+        }
     }
 
     // ── 工具 ──────────────────────────────────────────────────

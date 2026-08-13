@@ -159,11 +159,7 @@ fun CodePrintScreen(
             // 快速模板
             QuickTemplateSelector(
                 onSelect = { template ->
-                    if (template == CodeTemplate.TEXT) {
-                        viewModel.applyTemplate(template)
-                    } else {
-                        templateDialog = template
-                    }
+                    templateDialog = template
                 },
                 enabled = !uiState.printing
             )
@@ -593,8 +589,7 @@ enum class CodeTemplate(val label: String, val icon: String) {
     WIFI("WiFi", "📶"),
     EMAIL("邮箱", "✉"),
     SMS("短信", "💬"),
-    CARD("名片", "👤"),
-    TEXT("纯文本", "📝")
+    CARD("名片", "👤")
 }
 
 @Composable
@@ -708,7 +703,6 @@ private fun TemplateInputDialog(
             onDismiss = onDismiss
         )
         CodeTemplate.CARD -> CardTemplateDialog(viewModel = viewModel, onDismiss = onDismiss)
-        CodeTemplate.TEXT -> { /* handled inline, no dialog */ }
     }
 }
 
