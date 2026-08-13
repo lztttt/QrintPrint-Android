@@ -61,7 +61,7 @@
 
 > 核心文件：`protocol/QringProtocol.kt`
 
-### 三种抖动算法
+### 多种抖动算法
 
 Floyd-Steinberg 误差扩散、有序抖动、Bayer 抖动，**纯计算实现，不依赖任何图像库**，输出二值灰度交给光栅层打包。切换算法时复用已解码的灰度数据，不重复解码。
 
@@ -142,8 +142,6 @@ cd <项目根> && gradlew assembleDebug
 
 **打印出来模糊 / 偏淡？** 图片打印时选合适的抖动算法（文字 / 图表用阈值模式更好），或调高打印浓度设置。
 
-**横排打印出来和竖排一样？** 确保使用最新版本，横排打印时数据会自动旋转 90 度输出。
-
 ## 参与贡献
 
 欢迎 Issue 和 PR。提 Bug 时麻烦附上手机型号、Android 版本和复现步骤。
@@ -155,7 +153,7 @@ QringPrint 是个人开发的第三方客户端，与错题小印官方无关。
 ## 致谢
 
 本分支基于 [Thisko](https://github.com/Thisko) 的开源项目 [QrintPrint (HarmonyOS / ArkTS)](https://github.com/Thisko/QrintPrint) 移植而来。感谢原作者对打印机协议的逆向分析和开源贡献，没有他的工作就不会有这个 Android 版本。
-
+单词本功能的词库来源：github.com/KyleBing/english-vocabulary 在此致谢。
 ## 开源协议
 
 [MIT License](LICENSE)
