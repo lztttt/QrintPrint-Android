@@ -1,4 +1,4 @@
-﻿package com.qring.printer.ui.navigation
+package com.qring.printer.ui.navigation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -98,6 +98,8 @@ object Routes {
     const val TABLE_PRINT = "table_print"
     const val MD_PRINT = "md_print"
     const val WRONG_BOOK = "wrong_book"
+    const val PDF_PRINT = "pdf_print"
+    const val BATCH_PRINT = "batch_print"
     const val ABOUT = "about"
 }
 
@@ -140,12 +142,17 @@ fun AppNavHost() {
                     // 从历史记录重打 → 根据类型跳对应页面
                     when (record.typeName) {
                         "text" -> navController.navigate(Routes.TEXT_PRINT)
+                        "math" -> navController.navigate(Routes.MATH)
                         "image" -> navController.navigate(Routes.IMAGE_PRINT)
                         "code" -> navController.navigate(Routes.CODE_PRINT)
                         "custom" -> navController.navigate(Routes.CUSTOM_PRINT)
                         "schedule" -> navController.navigate(Routes.SCHEDULE)
                         "todo" -> navController.navigate(Routes.TODO)
                         "wrongbook" -> navController.navigate(Routes.WRONG_BOOK)
+                        "wordbook" -> navController.navigate(Routes.WORDBOOK)
+                        "markdown" -> navController.navigate(Routes.MD_PRINT)
+                        "pdf" -> navController.navigate(Routes.PDF_PRINT)
+                        "batch" -> navController.navigate(Routes.BATCH_PRINT)
                         else -> navController.navigate(Routes.WRONG_BOOK)
                     }
                 }
@@ -189,6 +196,12 @@ fun AppNavHost() {
         }
         composable(Routes.WRONG_BOOK) {
             com.qring.printer.ui.wrongbook.WrongBookScreen(navController = navController)
+        }
+        composable(Routes.PDF_PRINT) {
+            com.qring.printer.ui.pdfprint.PdfPrintScreen(navController = navController)
+        }
+        composable(Routes.BATCH_PRINT) {
+            com.qring.printer.ui.batchprint.BatchPrintScreen(navController = navController)
         }
         composable(Routes.ABOUT) {
             AboutScreen(navController = navController)

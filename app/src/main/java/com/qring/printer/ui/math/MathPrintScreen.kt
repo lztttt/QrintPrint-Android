@@ -58,9 +58,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.qring.printer.bt.PrinterConnection
+import com.qring.printer.data.HistoryPayloadHolder
 import com.qring.printer.data.HistoryRepository
 import com.qring.printer.model.ConnState
-import com.qring.printer.model.HIST_TYPE_TEXT
+import com.qring.printer.model.HIST_TYPE_MATH
 import com.qring.printer.model.PrinterStatus
 import com.qring.printer.model.PrinterStatusRepository
 import com.qring.printer.protocol.WIDTH_DOTS
@@ -70,12 +71,14 @@ import com.qring.printer.ui.theme.Metrics
 import com.qring.printer.ui.theme.ONLINE
 import com.qring.printer.ui.theme.QringPalette
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlin.random.Random
 
 // ── 口算题类型 ──────────────────────────────────────────────
@@ -126,8 +129,40 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
 
     val printerStatus: StateFlow<PrinterStatus> = PrinterStatusRepository.state
 
+    /** 题量滑杆防抖：拖动时只重新生成一次 */
+    private var generateJob: Job? = null
+    /** 预览防抖：滑块连续变化时只渲染最后一次 */
+    private var previewJob: Job? = null
+    private var previewGeneration = 0
+
     init {
+        restoreFromHistoryPayload()
         generateProblems()
+    }
+
+    /** 从历史记录重打时恢复设置（题目随机，按设置重新生成） */
+    private fun restoreFromHistoryPayload() {
+        val (type, payload) = HistoryPayloadHolder.consumePayload() ?: return
+        if (type != HIST_TYPE_MATH) {
+            HistoryPayloadHolder.setPayload(type, payload)
+            return
+        }
+        try {
+            val obj = JSONObject(payload)
+            val range = MathRange.entries.firstOrNull { it.name == obj.optString("range", "TWENTY") }
+                ?: MathRange.TWENTY
+            val op = MathOp.entries.firstOrNull { it.name == obj.optString("op", "ADD") }
+                ?: MathOp.ADD
+            _uiState.value = _uiState.value.copy(
+                selectedRange = range,
+                selectedOp = op,
+                problemCount = obj.optInt("count", 20).coerceIn(10, 200),
+                fontSize = obj.optDouble("fontSize", 20.0).toFloat().coerceIn(14f, 32f),
+                columns = obj.optInt("columns", 3).coerceIn(1, 3),
+                showAnswer = obj.optBoolean("showAnswer", false),
+                leftMargin = obj.optDouble("leftMargin", 8.0).toFloat().coerceIn(0f, 40f)
+            )
+        } catch (e: Exception) { }
     }
 
     fun setRange(range: MathRange) {
@@ -142,7 +177,12 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setProblemCount(count: Int) {
         _uiState.value = _uiState.value.copy(problemCount = count)
-        generateProblems()
+        // 滑杆拖动时防抖，停止拖动后才重新生成
+        generateJob?.cancel()
+        generateJob = viewModelScope.launch {
+            delay(200)
+            generateProblems()
+        }
     }
 
     fun setFontSize(size: Float) {
@@ -185,8 +225,9 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
 
             val (a, b, answer) = when (op) {
                 MathOp.ADD -> {
-                    val a = rng.nextInt(1, max + 1)
-                    val b = rng.nextInt(1, max + 1)
+                    // 修正：a + b 必须 ≤ max（10 以内加法结果不超过 10）
+                    val a = rng.nextInt(1, max) // 1..max-1，给 b 留空间
+                    val b = rng.nextInt(1, max - a + 1)
                     Triple(a, b, a + b)
                 }
                 MathOp.SUB -> {
@@ -222,20 +263,29 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
             problems.add(MathProblem(a, b, op, answer))
         }
 
+        // 洗牌打散，避免相邻题目重复/相似（如连续的 1+1=2）
+        problems.shuffle(rng)
+
         _uiState.value = _uiState.value.copy(problems = problems)
         updatePreview()
     }
 
-    /** 生成预览 Bitmap */
+    /** 生成预览 Bitmap（防抖：滑块连续变化时只渲染最后一次） */
     private fun updatePreview() {
         val state = _uiState.value
         if (state.problems.isEmpty()) return
 
-        viewModelScope.launch {
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch {
+            val gen = ++previewGeneration
             try {
                 val old = _uiState.value.previewBitmap
                 val bitmap = withContext(Dispatchers.Default) {
-                    renderMathBitmap(state)
+                    renderMathBitmap(_uiState.value)
+                }
+                if (gen != previewGeneration) {
+                    bitmap.recycle()
+                    return@launch
                 }
                 _uiState.value = _uiState.value.copy(previewBitmap = bitmap)
                 old?.let { if (it != bitmap) { delay(150); it.recycle() } }
@@ -313,7 +363,6 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(printing = true, resultMessage = "")
 
         viewModelScope.launch {
-            var printBitmap: Bitmap? = null
             var thumbBitmap: Bitmap? = null
             try {
                 val fault = withContext(Dispatchers.IO) {
@@ -329,20 +378,43 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 val result = withContext(Dispatchers.Default) {
-                    printBitmap = renderMathBitmap(state)
-                    val raster = bitmapToRaster(printBitmap!!, 212)
+                    // 分块打印：每块最多 150 行，防止大题量（如 200 题 1 列）一次发送超时
+                    val columns = state.columns
+                    val chunkRows = 150
+                    var start = 0
+                    var ok = true
+                    var failMsg = ""
+                    val rows = (state.problems.size + columns - 1) / columns
+                    while (start < state.problems.size) {
+                        val end = minOf(state.problems.size, start + chunkRows * columns)
+                        val chunkState = state.copy(problems = state.problems.subList(start, end))
+                        val chunkBmp = renderMathBitmap(chunkState)
+                        val chunkRaster = bitmapToRaster(chunkBmp, 212)
 
-                    thumbBitmap = Bitmap.createScaledBitmap(
-                        printBitmap!!, 200, Math.round(200f * printBitmap!!.height / printBitmap!!.width), true
-                    )
+                        // 首块顺便生成缩略图（必须在 recycle 之前）
+                        if (thumbBitmap == null) {
+                            thumbBitmap = Bitmap.createScaledBitmap(
+                                chunkBmp, 200, Math.round(200f * chunkBmp.height / chunkBmp.width), true
+                            )
+                        }
+                        chunkBmp.recycle()
 
-                    val printResult = withContext(Dispatchers.IO) {
-                        printerConnection.printRaster(raster, 1)
+                        val r = withContext(Dispatchers.IO) {
+                            printerConnection.printRaster(chunkRaster, 1)
+                        }
+                        if (!r.ok) {
+                            ok = false
+                            failMsg = r.message
+                            break
+                        }
+                        start = end
                     }
+
+                    val printResult = if (ok) com.qring.printer.bt.PrintResult(true, "打印完成（$rows 行）") else com.qring.printer.bt.PrintResult(false, failMsg)
 
                     if (printResult.ok) {
                         try {
-                            val payload = org.json.JSONObject().apply {
+                            val payload = JSONObject().apply {
                                 put("type", "math")
                                 put("range", state.selectedRange.name)
                                 put("op", state.selectedOp.name)
@@ -350,8 +422,9 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
                                 put("fontSize", state.fontSize.toDouble())
                                 put("columns", state.columns)
                                 put("showAnswer", state.showAnswer)
+                                put("leftMargin", state.leftMargin.toDouble())
                             }.toString()
-                            historyRepo.saveHistory(HIST_TYPE_TEXT, thumbBitmap!!, payload)
+                            historyRepo.saveHistory(HIST_TYPE_MATH, thumbBitmap!!, payload)
                         } catch (e: Exception) { }
                     }
 
@@ -370,7 +443,6 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
                     resultMessage = "打印失败：${e.message}"
                 )
             } finally {
-                try { printBitmap?.recycle() } catch (e: Exception) { }
                 try { thumbBitmap?.recycle() } catch (e: Exception) { }
                 if (_uiState.value.printing) {
                     _uiState.value = _uiState.value.copy(printing = false)
@@ -381,6 +453,8 @@ class MathPrintViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         super.onCleared()
+        generateJob?.cancel()
+        previewJob?.cancel()
         _uiState.value.previewBitmap?.recycle()
     }
 }

@@ -241,6 +241,45 @@ fun rotateBinary(
     }
 }
 
+/**
+ * 灰度图旋转：degrees 取 0/90/180/270。
+ * 纯转置 + 翻转（与 rotateBinary 相同的坐标映射），不做任何重采样 ——
+ * 在灰度上旋转后再缩放/抖动，比「先抖动再放大二值图」画质好得多。
+ */
+fun rotateGray(gray: GrayImage, degrees: Int): GrayImage {
+    val w = gray.width
+    val h = gray.height
+    val src = gray.data
+    return when (degrees % 360) {
+        180 -> {
+            val out = IntArray(w * h)
+            for (i in 0 until w * h) out[w * h - 1 - i] = src[i]
+            GrayImage(out, w, h)
+        }
+        90 -> {
+            // 顺时针 90°：新宽 = 原高，新高 = 原宽；(x,y) → (h-1-y, x)
+            val out = IntArray(w * h)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    out[x * h + (h - 1 - y)] = src[y * w + x]
+                }
+            }
+            GrayImage(out, h, w)
+        }
+        270 -> {
+            // 逆时针 90°：新宽 = 原高，新高 = 原宽；(x,y) → (y, w-1-x)
+            val out = IntArray(w * h)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    out[(w - 1 - x) * h + y] = src[y * w + x]
+                }
+            }
+            GrayImage(out, h, w)
+        }
+        else -> gray
+    }
+}
+
 /** 二值位图水平翻转（左右镜像） */
 fun flipBinaryHorizontal(
     binary: ByteArray, width: Int, height: Int
@@ -312,6 +351,49 @@ fun bitmapToRaster(bitmap: Bitmap, threshold: Int): RasterData {
     return packBinaryToRaster(binary, gray.width, gray.height)
 }
 
+/**
+ * 位图 → 光栅（384 点宽），分行带流式转换。
+ *
+ * 与 bitmapToRaster 的区别：不先生成整幅灰度数组（384×8000×4 ≈ 12MB），
+ * 而是按 256 行一个 band 读取像素、就地二值化、直接打包进光栅字节，
+ * 中间只多一块 band 缓冲。超长文字（如单词本整段打印）内存峰值能降一个数量级。
+ *
+ * 位图宽度必须为 WIDTH_DOTS（单词本等自绘位图满足）；否则回退到 bitmapToRaster。
+ * 灰度公式与 bitmapToGrayRaw 保持一致（白底合成 alpha + Rec.601 亮度）。
+ */
+fun bitmapToRasterStreamed(bitmap: Bitmap, threshold: Int): RasterData {
+    val width = bitmap.width
+    val height = bitmap.height
+    if (width != WIDTH_DOTS || height <= 0) return bitmapToRaster(bitmap, threshold)
+
+    val out = ByteArray(WIDTH_BYTES * height)
+    val bandRows = 256
+    val pixels = IntArray(width * bandRows)
+
+    for (y0 in 0 until height step bandRows) {
+        val rows = minOf(bandRows, height - y0)
+        bitmap.getPixels(pixels, 0, width, 0, y0, width, rows)
+        for (r in 0 until rows) {
+            val rowBase = r * width
+            val outBase = (y0 + r) * WIDTH_BYTES
+            for (x in 0 until width) {
+                val p = pixels[rowBase + x]
+                val a = (p ushr 24) and 0xFF
+                // 透明像素按白色合成（与 bitmapToGrayRaw 一致）
+                val rr = (((p ushr 16) and 0xFF) * a + 255 * (255 - a)) / 255
+                val gg = (((p ushr 8) and 0xFF) * a + 255 * (255 - a)) / 255
+                val bb = ((p and 0xFF) * a + 255 * (255 - a)) / 255
+                val gray = (299 * rr + 587 * gg + 114 * bb) / 1000
+                if (gray < threshold) {
+                    out[outBase + (x ushr 3)] =
+                        (out[outBase + (x ushr 3)].toInt() or (0x80 ushr (x and 7))).toByte()
+                }
+            }
+        }
+    }
+    return RasterData(out, WIDTH_BYTES, height)
+}
+
 // ── 预览图生成 ──────────────────────────────────────────────
 
 /**
@@ -370,7 +452,7 @@ private fun buildFontSpec(options: TextRenderOptions): String {
 }
 
 /** 按可用宽度逐字符折行。中文没有词边界，只能按字符量宽度 */
-private fun wrapText(
+internal fun wrapText(
     text: String, paint: Paint, usable: Float
 ): List<String> {
     val lines = mutableListOf<String>()

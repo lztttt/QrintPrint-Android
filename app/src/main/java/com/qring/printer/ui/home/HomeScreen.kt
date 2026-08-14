@@ -39,6 +39,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -155,7 +157,9 @@ fun HomeScreen(
                 onMathClick = { navController.navigate(Routes.MATH) },
                 onTableClick = { navController.navigate(Routes.TABLE_PRINT) },
                 onMdClick = { navController.navigate(Routes.MD_PRINT) },
-                onWrongBookClick = { navController.navigate(Routes.WRONG_BOOK) }
+                onWrongBookClick = { navController.navigate(Routes.WRONG_BOOK) },
+                onPdfClick = { navController.navigate(Routes.PDF_PRINT) },
+                onBatchClick = { navController.navigate(Routes.BATCH_PRINT) }
             )
         }
     }
@@ -397,7 +401,9 @@ onWordbookClick: () -> Unit = {},
 onMathClick: () -> Unit = {},
 onTableClick: () -> Unit = {},
     onMdClick: () -> Unit = {},
-    onWrongBookClick: () -> Unit = {}
+    onWrongBookClick: () -> Unit = {},
+    onPdfClick: () -> Unit = {},
+    onBatchClick: () -> Unit = {}
 ) {
 val actions = listOf(
 QuickAction2("schedule", "课程表", "手动编辑课程表", com.qring.printer.ui.theme.TILE_MINT, Icons.Default.DateRange, onScheduleClick),
@@ -409,6 +415,8 @@ QuickAction2("math", "口算题", "自动生成口算", Color(0xFF6FCF97), Icons
 QuickAction2("table", "表格", "表格打印", Color(0xFF8FD9B6), Icons.Default.TableChart, onTableClick),
 QuickAction2("md", "文档", "Markdown打印", Color(0xFF9CC4EF), Icons.Default.Article, onMdClick),
     QuickAction2("wrongbook", "错题本", "拍照→增强→打印", Color(0xFFF6C870), Icons.Default.DocumentScanner, onWrongBookClick),
+    QuickAction2("pdf", "PDF", "图片型PDF打印", Color(0xFFEF8080), Icons.Default.PictureAsPdf, onPdfClick),
+    QuickAction2("batch", "批量打印", "文字+图片批量", Color(0xFF77C9F5), Icons.Default.LibraryAdd, onBatchClick),
 )
 
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.GRID_GAP.dp)) {

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -46,6 +47,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -87,6 +89,7 @@ import com.qring.printer.protocol.DitherMode
 import com.qring.printer.ui.common.PrintWarningDialog
 import com.qring.printer.ui.theme.QringPalette
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -104,6 +107,8 @@ data class ScheduleConfig(
     val sectionCount: Int = 8,
     val showSectionTime: Boolean = true,
     val includeWeekend: Boolean = false,
+    // true = 横版（星期竖排左侧、节次横排顶部，纸张更短更方正）
+    val landscape: Boolean = false,
     val title: String = "课程表",
     val sectionTimes: List<String> = listOf(
         "08:00-08:45",
@@ -147,6 +152,10 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     private val historyRepo = HistoryRepository(application)
     private val _state = MutableStateFlow(ScheduleState())
     val state: StateFlow<ScheduleState> = _state.asStateFlow()
+
+    /** 预览防抖任务：配置连续变化（如逐字输入节次时间）时只渲染最后一次 */
+    private var previewJob: Job? = null
+    private var previewGeneration = 0
 
     val printerStatus: StateFlow<PrinterStatus> = PrinterStatusRepository.state
 
@@ -194,6 +203,7 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
                     sectionCount = obj.optInt("sectionCount", 8),
                     showSectionTime = obj.optBoolean("showSectionTime", true),
                     includeWeekend = obj.optBoolean("includeWeekend", false),
+                    landscape = obj.optBoolean("landscape", false),
                     title = obj.optString("title", "课程表"),
                     sectionTimes = sectionTimes
                 ),
@@ -209,6 +219,7 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
             put("sectionCount", state.config.sectionCount)
             put("showSectionTime", state.config.showSectionTime)
             put("includeWeekend", state.config.includeWeekend)
+            put("landscape", state.config.landscape)
             val timesArray = JSONArray()
             state.config.sectionTimes.forEach { timesArray.put(it) }
             put("sectionTimes", timesArray)
@@ -264,6 +275,12 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
                 entries = filteredEntries
             )
         }
+        updatePreview()
+    }
+
+    /** 切换横版/竖版布局 */
+    fun toggleLandscape(enabled: Boolean) {
+        _state.update { it.copy(config = it.config.copy(landscape = enabled)) }
         updatePreview()
     }
 
@@ -336,11 +353,17 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
             return
         }
         if (state.printing) return
-        viewModelScope.launch {
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch {
+            val gen = ++previewGeneration
             try {
                 val old = _state.value.previewBitmap
                 val bitmap = withContext(Dispatchers.Default) {
                     renderSchedulePreview(_state.value)
+                }
+                if (gen != previewGeneration) {
+                    bitmap.recycle()
+                    return@launch
                 }
                 _state.value = _state.value.copy(previewBitmap = bitmap)
                 old?.let { if (it != bitmap) { delay(150); it.recycle() } }
@@ -349,24 +372,34 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
     }
 
     /** 渲染课程表预览位图 */
+    /**
+     * 渲染课程表预览位图。
+     *
+     * 竖版（默认）：星期横排表头、节次竖排，长边沿出纸方向。
+     * 横版：整表旋转 90° 打印（长边沿沿出纸方向），横持查看仍是正常的
+     * 课程表（上面星期、左侧节次时间）。
+     */
     private fun renderSchedulePreview(state: ScheduleState): Bitmap {
         val config = state.config
         val dayCount = if (config.includeWeekend) 7 else 5
         val sectionCount = config.sectionCount
 
-        // 布局参数
         val margin = 8f
-        val labelColWidth = 48f  // 节次列宽
-        val cellWidth = (WIDTH_DOTS - margin * 2 - labelColWidth) / dayCount
+        val labelColWidth = 48f  // 节次列
         val titleHeight = 20f
         val headerHeight = 24f
         val sectionHeight = 40f
         val showTime = config.showSectionTime
-        val timeHeight = if (showTime) 18f else 0f  // 两行时间需要更多高度
+        val timeHeight = if (showTime) 18f else 0f
+
+        // 竖版：列=星期，行=节次
+        val colCount = dayCount
+        val rowCount = sectionCount
+        val cellWidth = ((WIDTH_DOTS - margin * 2 - labelColWidth) / colCount).toFloat()
         val rowHeight = sectionHeight + timeHeight
 
-        val gridWidth = (margin + labelColWidth + cellWidth * dayCount + margin).toInt()
-        val gridHeight = (margin + titleHeight + headerHeight + rowHeight * sectionCount + margin).toInt()
+        val gridWidth = (margin + labelColWidth + cellWidth * colCount + margin).toInt()
+        val gridHeight = (margin + titleHeight + headerHeight + rowHeight * rowCount + margin).toInt()
 
         val bitmap = Bitmap.createBitmap(WIDTH_DOTS, maxOf(1, gridHeight), Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
@@ -401,166 +434,352 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
             textAlign = Paint.Align.CENTER
         }
 
-        val sectionNumPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val labelTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.BLACK
             textSize = 13f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             textAlign = Paint.Align.CENTER
         }
 
+        // 时间小字：加深加大，保证打印可读
         val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.GRAY
+            color = Color.rgb(70, 70, 70)
+            textSize = 9.5f
+            textAlign = Paint.Align.CENTER
+        }
+        val timePaintSmall = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(90, 90, 90)
             textSize = 8f
             textAlign = Paint.Align.CENTER
         }
 
         val left = margin
         val top = margin
-        val right = margin + labelColWidth + cellWidth * dayCount
-        val bottom = top + titleHeight + headerHeight + rowHeight * sectionCount
+        val right = margin + labelColWidth + cellWidth * colCount
+        val bottom = top + titleHeight + headerHeight + rowHeight * rowCount
 
-        // 绘制标题（上方居中加粗）
+        // 标题（上方居中加粗）
         if (config.title.isNotBlank()) {
-            val titleCx = (left + right) / 2f
-            canvas.drawText(config.title, titleCx, top + titleHeight - 2f, titlePaint)
+            canvas.drawText(config.title, (left + right) / 2f, top + titleHeight - 2f, titlePaint)
         }
 
         // 表头起始 Y
         val headerTop = top + titleHeight
 
-        // 绘制表头背景
+        // 表头背景
         fillPaint.color = Color.rgb(240, 240, 240)
         canvas.drawRect(left, headerTop, right, headerTop + headerHeight, fillPaint)
 
-        // 绘制表头文字
         val dayLabels = if (config.includeWeekend)
             listOf("一", "二", "三", "四", "五", "六", "日")
         else
             listOf("一", "二", "三", "四", "五")
 
-        // 左上角“节”
-        canvas.drawText("节", left + labelColWidth / 2f, headerTop + headerHeight - 6f, headerTextPaint)
-        for (d in 0 until dayCount) {
-            val cx = left + labelColWidth + cellWidth * d + cellWidth / 2f
-            canvas.drawText(dayLabels[d], cx, headerTop + headerHeight - 6f, headerTextPaint)
-        }
-
-        // 绘制网格线和节次
-        for (s in 0 until sectionCount) {
-            val rowTop = headerTop + headerHeight + s * rowHeight
-            val rowBottom = rowTop + sectionHeight
-
-            // 节次号
-            val cy = rowTop + sectionHeight / 2f
-            canvas.drawText("${s + 1}", left + labelColWidth / 2f, cy + 5f, sectionNumPaint)
-            if (showTime) {
-                val time = config.sectionTimes.getOrElse(s) { "" }
-                if (time.isNotEmpty()) {
-                    // 时间分两行显示：开始时间 / 结束时间
-                    val parts = time.split("-", "～", "~")
-                    if (parts.size >= 2) {
-                        canvas.drawText(parts[0].trim(), left + labelColWidth / 2f, rowBottom + 8f, timePaint)
-                        canvas.drawText(parts[1].trim(), left + labelColWidth / 2f, rowBottom + 16f, timePaint)
-                    } else {
-                        canvas.drawText(time, left + labelColWidth / 2f, rowBottom + 12f, timePaint)
-                    }
-                }
-            }
-
-            // 网格线 - 每行
-            canvas.drawLine(left, rowTop, right, rowTop, gridPaint)
-
-            // 每列
+            // ── 竖版：表头=星期，左列=节次 ──
+            canvas.drawText("节", left + labelColWidth / 2f, headerTop + headerHeight - 6f, headerTextPaint)
             for (d in 0 until dayCount) {
-                val colLeft = left + labelColWidth + cellWidth * d
-                if (s == 0) {
-                    canvas.drawLine(colLeft, headerTop, colLeft, bottom, gridPaint)
+                val cx = left + labelColWidth + cellWidth * d + cellWidth / 2f
+                canvas.drawText(dayLabels[d], cx, headerTop + headerHeight - 6f, headerTextPaint)
+            }
+
+            for (s in 0 until sectionCount) {
+                val rowTop = headerTop + headerHeight + s * rowHeight
+                val rowBottom = rowTop + sectionHeight
+
+                // 节次号
+                canvas.drawText("${s + 1}", left + labelColWidth / 2f, rowTop + sectionHeight / 2f + 5f, labelTextPaint)
+
+                // 时间：行底部区域，两行加深
+                if (showTime) {
+                    val time = config.sectionTimes.getOrElse(s) { "" }
+                    if (time.isNotEmpty()) {
+                        val parts = time.split("-", "～", "~")
+                        if (parts.size >= 2) {
+                            canvas.drawText(parts[0].trim(), left + labelColWidth / 2f, rowBottom + 7f, timePaint)
+                            canvas.drawText(parts[1].trim(), left + labelColWidth / 2f, rowBottom + 16f, timePaint)
+                        } else {
+                            canvas.drawText(time, left + labelColWidth / 2f, rowBottom + 12f, timePaint)
+                        }
+                    }
+                }
+
+                canvas.drawLine(left, rowTop, right, rowTop, gridPaint)
+                for (d in 0 until dayCount) {
+                    val colLeft = left + labelColWidth + cellWidth * d
+                    if (s == 0) {
+                        canvas.drawLine(colLeft, headerTop, colLeft, bottom, gridPaint)
+                    }
                 }
             }
+            canvas.drawLine(left, bottom, right, bottom, gridPaint)
+            canvas.drawLine(left, headerTop, left, bottom, gridPaint)
+            canvas.drawLine(right, headerTop, right, bottom, gridPaint)
+            canvas.drawLine(left + labelColWidth, headerTop, left + labelColWidth, bottom, gridPaint)
+
+            // 竖版课程（垂直合并，占满完整行含时间区）
+            for (entry in state.entries) {
+                if (entry.day >= dayCount) continue
+                val validSections = entry.sections.filter { it < sectionCount }.sorted()
+                if (validSections.isEmpty()) continue
+                val ranges = contiguousRanges(validSections)
+                val cellLeft = left + labelColWidth + cellWidth * entry.day
+
+                for (range in ranges) {
+                    val minS = range.first()
+                    val maxS = range.last()
+                    val cellTop = headerTop + headerHeight + minS * rowHeight
+                    // 修复：从第一行行顶画到最后一行行底（含时间区），不再只占 2/3
+                    val cellBottom = headerTop + headerHeight + (maxS + 1) * rowHeight
+                    val cellHeight = cellBottom - cellTop
+
+                    // 背景
+                    fillPaint.color = Color.rgb(230, 240, 255)
+                    fillPaint.style = Paint.Style.FILL
+                    canvas.drawRect(cellLeft + 1, cellTop + 1, cellLeft + cellWidth - 1, cellBottom - 1, fillPaint)
+                    // 边框
+                    fillPaint.color = Color.rgb(100, 149, 237)
+                    fillPaint.style = Paint.Style.STROKE
+                    canvas.drawRect(cellLeft + 1, cellTop + 1, cellLeft + cellWidth - 1, cellBottom - 1, fillPaint)
+                    fillPaint.style = Paint.Style.FILL
+
+                    // 课程名
+                    val textCenterY = cellTop + cellHeight / 2f
+                    val nameSize = if (cellHeight > 60) 14f else 12f
+                    textPaint.textSize = nameSize
+                    textPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                    textPaint.color = Color.BLACK
+
+                    val maxNameWidth = cellWidth - 4
+                    var displayName = entry.courseName
+                    while (textPaint.measureText(displayName) > maxNameWidth && displayName.length > 2) {
+                        displayName = displayName.substring(0, displayName.length - 1)
+                    }
+                    if (displayName != entry.courseName) {
+                        displayName = displayName.substring(0, displayName.length - 1) + "…"
+                    }
+                    canvas.drawText(displayName, cellLeft + cellWidth / 2f, textCenterY - 2f, textPaint)
+
+                    // 地点
+                    if (entry.location.isNotBlank() && cellHeight > 30) {
+                        textPaint.textSize = 9f
+                        textPaint.typeface = Typeface.DEFAULT
+                        textPaint.color = Color.GRAY
+                        var loc = entry.location
+                        while (textPaint.measureText(loc) > maxNameWidth && loc.length > 2) {
+                            loc = loc.substring(0, loc.length - 1)
+                        }
+                        if (loc != entry.location) {
+                            loc = loc.substring(0, loc.length - 1) + "…"
+                        }
+                        canvas.drawText(loc, cellLeft + cellWidth / 2f, textCenterY + 12f, textPaint)
+                    }
+                }
+            }
+        // 横版：整表旋转 90° 打印（长边沿沿出纸方向），横持查看仍是正常课程表
+        if (config.landscape) {
+            val matrix = android.graphics.Matrix().apply { postRotate(90f) }
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            bitmap.recycle()
+            val scale = WIDTH_DOTS.toFloat() / rotated.width
+            val scaled = Bitmap.createScaledBitmap(
+                rotated, WIDTH_DOTS, maxOf(1, Math.round(rotated.height * scale)), true
+            )
+            rotated.recycle()
+            return scaled
         }
 
-        // 最后一行和列的线
-        canvas.drawLine(left, bottom, right, bottom, gridPaint)
-        canvas.drawLine(left, headerTop, left, bottom, gridPaint)
-        canvas.drawLine(right, headerTop, right, bottom, gridPaint)
-        canvas.drawLine(left + labelColWidth, headerTop, left + labelColWidth, bottom, gridPaint)
-
-        // 绘制课程（合并单元格）— 按连续区间分组渲染
-        for (entry in state.entries) {
-            if (entry.day >= dayCount) continue
-            val validSections = entry.sections.filter { it < sectionCount }.sorted()
-            if (validSections.isEmpty()) continue
-
-            // 将节次列表分组为连续区间，如 [0,1,4] -> [[0,1], [4]]
-            val contiguousRanges = mutableListOf<List<Int>>()
-            var currentRange = mutableListOf(validSections.first())
-            for (i in 1 until validSections.size) {
-                if (validSections[i] == validSections[i - 1] + 1) {
-                    currentRange.add(validSections[i])
-                } else {
-                    contiguousRanges.add(currentRange)
-                    currentRange = mutableListOf(validSections[i])
-                }
-            }
-            contiguousRanges.add(currentRange)
-
-            val cellLeft = left + labelColWidth + cellWidth * entry.day
-
-            // 为每个连续区间绘制合并单元格
-            for (range in contiguousRanges) {
-                val minS = range.first()
-                val maxS = range.last()
-                val cellTop = headerTop + headerHeight + minS * rowHeight
-                val cellBottom = headerTop + headerHeight + (maxS + 1) * rowHeight - (if (showTime) timeHeight else 0f)
-                val cellHeight = cellBottom - cellTop
-
-                // 背景
-                fillPaint.color = Color.rgb(230, 240, 255)
-                canvas.drawRect(cellLeft + 1, cellTop + 1, cellLeft + cellWidth - 1, cellBottom - 1, fillPaint)
-
-                // 边框
-                fillPaint.color = Color.rgb(100, 149, 237)
-                fillPaint.style = Paint.Style.STROKE
-                canvas.drawRect(cellLeft + 1, cellTop + 1, cellLeft + cellWidth - 1, cellBottom - 1, fillPaint)
-                fillPaint.style = Paint.Style.FILL
-
-                // 课程名（只在每个区间的第一个节次居中显示）
-                val textCenterY = cellTop + cellHeight / 2f
-                val nameSize = if (cellHeight > 60) 14f else 12f
-                textPaint.textSize = nameSize
-                textPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                textPaint.color = Color.BLACK
-
-                // 截断过长文字
-                val maxNameWidth = cellWidth - 4
-                var displayName = entry.courseName
-                while (textPaint.measureText(displayName) > maxNameWidth && displayName.length > 2) {
-                    displayName = displayName.substring(0, displayName.length - 1)
-                }
-                if (displayName != entry.courseName) {
-                    displayName = displayName.substring(0, displayName.length - 1) + "…"
-                }
-
-                canvas.drawText(displayName, cellLeft + cellWidth / 2f, textCenterY - 2f, textPaint)
-
-                // 地点
-                if (entry.location.isNotBlank() && cellHeight > 30) {
-                    textPaint.textSize = 9f
-                    textPaint.typeface = Typeface.DEFAULT
-                    textPaint.color = Color.GRAY
-                    var loc = entry.location
-                    while (textPaint.measureText(loc) > maxNameWidth && loc.length > 2) {
-                        loc = loc.substring(0, loc.length - 1)
-                    }
-                    if (loc != entry.location) {
-                        loc = loc.substring(0, loc.length - 1) + "…"
-                    }
-                    canvas.drawText(loc, cellLeft + cellWidth / 2f, textCenterY + 12f, textPaint)
-                }
-            }
-        }
 
         return bitmap
+    }
+
+    /**
+     * 渲染「今日课程」竖版清单：每门课一节（节次+时间 / 课程名+地点）。
+     */
+    private fun renderTodayBitmap(state: ScheduleState, day: Int): Bitmap {
+        val config = state.config
+        val entries = state.entries
+            .filter { it.day == day }
+            .sortedBy { it.sections.minOrNull() ?: 0 }
+
+        val margin = 10f
+        val titleH = 28f
+        val rowH = 38f
+        val height = (margin + titleH + entries.size * rowH + margin).toInt()
+        val bitmap = Bitmap.createBitmap(WIDTH_DOTS, maxOf(1, height), Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.WHITE)
+
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textSize = 15f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+        }
+        val infoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(80, 80, 80)
+            textSize = 10.5f
+            typeface = Typeface.DEFAULT
+            textAlign = Paint.Align.LEFT
+        }
+        val coursePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textSize = 14f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textAlign = Paint.Align.LEFT
+        }
+        val linePaint = Paint().apply {
+            color = Color.LTGRAY
+            strokeWidth = 1f
+        }
+
+        val dayLabels = if (config.includeWeekend)
+            listOf("一", "二", "三", "四", "五", "六", "日")
+        else
+            listOf("一", "二", "三", "四", "五")
+
+        // 标题
+        canvas.drawText(
+            "今日课程 · 周${dayLabels.getOrElse(day) { "" }}",
+            WIDTH_DOTS / 2f, margin + titleH - 7f, titlePaint
+        )
+        canvas.drawLine(margin, margin + titleH, WIDTH_DOTS - margin, margin + titleH, linePaint)
+
+        for ((i, entry) in entries.withIndex()) {
+            val y = margin + titleH + i * rowH
+            val minS = entry.sections.minOrNull() ?: 0
+            val maxS = entry.sections.maxOrNull() ?: minS
+            val secText = if (maxS > minS) "第${minS + 1}-${maxS + 1}节" else "第${minS + 1}节"
+            val time = config.sectionTimes.getOrElse(minS) { "" }
+
+            // 节次 + 时间（第一行）
+            canvas.drawText("$secText  $time", margin + 2f, y + 14f, infoPaint)
+
+            // 课程名 + 地点（第二行）
+            val courseText = if (entry.location.isNotBlank()) {
+                "${entry.courseName} · ${entry.location}"
+            } else {
+                entry.courseName
+            }
+            var display = courseText
+            while (coursePaint.measureText(display) > WIDTH_DOTS - margin * 2 - 4 && display.length > 1) {
+                display = display.substring(0, display.length - 1)
+            }
+            if (display != courseText) {
+                display = display.substring(0, display.length - 1) + "…"
+            }
+            canvas.drawText(display, margin + 2f, y + 31f, coursePaint)
+
+            // 行分隔线
+            if (i < entries.size - 1) {
+                canvas.drawLine(margin, y + rowH, WIDTH_DOTS - margin, y + rowH, linePaint)
+            }
+        }
+        return bitmap
+    }
+
+    /**
+     * 打印今日课程（竖版清单）。
+     * 取系统当前星期，只打印当天有课的节次。
+     */
+    fun printToday() {
+        val state = _state.value
+        if (state.printing) return
+        if (printerStatus.value.connState != ConnState.CONNECTED) {
+            _state.value = _state.value.copy(
+                resultOk = false,
+                resultMessage = "请先在首页连接打印机"
+            )
+            return
+        }
+        if (state.entries.isEmpty()) {
+            _state.value = _state.value.copy(
+                resultOk = false,
+                resultMessage = "请先添加课程"
+            )
+            return
+        }
+
+        // 今天星期几：0=周一 ... 6=周日（Calendar 的 SUNDAY=1 需转换）
+        val dayIndex = (java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_WEEK) + 5) % 7
+        val todayEntries = state.entries.filter { it.day == dayIndex }
+        if (todayEntries.isEmpty()) {
+            val dayLabels = if (state.config.includeWeekend)
+                listOf("一", "二", "三", "四", "五", "六", "日")
+            else
+                listOf("一", "二", "三", "四", "五")
+            _state.value = _state.value.copy(
+                resultOk = false,
+                resultMessage = "今天（周${dayLabels.getOrElse(dayIndex) { "" }}）没有课程"
+            )
+            return
+        }
+
+        _state.value = _state.value.copy(printing = true, resultMessage = "")
+
+        viewModelScope.launch {
+            var thumbBitmap: Bitmap? = null
+            try {
+                val fault = withContext(Dispatchers.IO) {
+                    printerConnection.preflightCheck()
+                }
+                if (fault != null) {
+                    _state.value = _state.value.copy(
+                        printing = false,
+                        resultOk = false,
+                        resultMessage = fault
+                    )
+                    return@launch
+                }
+
+                val result = withContext(Dispatchers.Default) {
+                    val bmp = renderTodayBitmap(_state.value, dayIndex)
+                    thumbBitmap = Bitmap.createScaledBitmap(
+                        bmp, 200, Math.round(200f * bmp.height / bmp.width), true
+                    )
+                    val gray = bitmapToGray(bmp)
+                    bmp.recycle()
+                    val binary = ditherToBinary(gray, DitherMode.NONE, 211)
+                    val raster = packBinaryToRaster(binary, gray.width, gray.height)
+                    withContext(Dispatchers.IO) {
+                        printerConnection.printRaster(raster, 1)
+                    }
+                }
+
+                _state.value = _state.value.copy(
+                    printing = false,
+                    resultOk = result.ok,
+                    resultMessage = result.message
+                )
+            } catch (e: Exception) {
+                Timber.tag("ScheduleVM").e(e, "printToday failed")
+                _state.value = _state.value.copy(
+                    printing = false,
+                    resultOk = false,
+                    resultMessage = "打印失败：${e.message}"
+                )
+            } finally {
+                try { thumbBitmap?.recycle() } catch (e: Exception) { }
+                if (_state.value.printing) {
+                    _state.value = _state.value.copy(printing = false)
+                }
+            }
+        }
+    }
+
+    /** 把升序节次列表按连续区间分组，如 [0,1,4] -> [[0,1],[4]] */
+    private fun contiguousRanges(sections: List<Int>): List<List<Int>> {
+        val ranges = mutableListOf<List<Int>>()
+        var cur = mutableListOf(sections.first())
+        for (i in 1 until sections.size) {
+            if (sections[i] == sections[i - 1] + 1) {
+                cur.add(sections[i])
+            } else {
+                ranges.add(cur)
+                cur = mutableListOf(sections[i])
+            }
+        }
+        ranges.add(cur)
+        return ranges
     }
 
     fun print() {
@@ -650,7 +869,8 @@ class ScheduleViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         super.onCleared()
-        _state.value.previewBitmap?.recycle()
+        previewJob?.cancel()
+        try { _state.value.previewBitmap?.recycle() } catch (e: Exception) { }
     }
 }
 
@@ -806,6 +1026,23 @@ fun ScheduleScreen(navController: NavHostController) {
                 }
 
                 val connected = printerStatus.connState == ConnState.CONNECTED
+                OutlinedButton(
+                    onClick = viewModel::printToday,
+                    enabled = !state.printing && state.entries.isNotEmpty() && connected,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = QringPalette.brand,
+                        disabledContentColor = QringPalette.brand.copy(alpha = 0.4f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Today, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("打印今日课程（竖版）", fontSize = 14.sp)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 Button(
                     onClick = viewModel::print,
                     enabled = !state.printing && state.entries.isNotEmpty() && connected,
@@ -840,6 +1077,7 @@ fun ScheduleScreen(navController: NavHostController) {
                 onSectionCountChange = viewModel::setSectionCount,
                 onToggleSectionTime = viewModel::toggleSectionTime,
                 onToggleWeekend = viewModel::toggleWeekend,
+                onToggleLandscape = viewModel::toggleLandscape,
                 onSectionTimeChange = viewModel::updateSectionTime
             )
         }
@@ -885,9 +1123,10 @@ private fun SchedulePreviewCard(
         shape = RoundedCornerShape(14.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
+            val modeLabel = if (state.config.landscape) "横版" else "竖版"
             Text(
                 text = if (preview != null)
-                    "宽 384 点 · 高 ${preview.height} 点 (${String.format("%.1f", preview.height / 8.0)}mm) · ${state.config.sectionCount}节"
+                    "$modeLabel · 宽 384 点 · 高 ${preview.height} 点 (${String.format("%.1f", preview.height / 8.0)}mm) · ${state.config.sectionCount}节"
                 else if (state.entries.isEmpty())
                     "添加课程后自动预览"
                 else
@@ -1006,10 +1245,10 @@ private fun ScheduleGrid(
                                 // 时间分两行显示
                                 val parts = time.split("-", "～", "~")
                                 if (parts.size >= 2) {
-                                    Text(parts[0].trim(), fontSize = 7.sp, color = QringPalette.textSecondary, maxLines = 1)
-                                    Text(parts[1].trim(), fontSize = 7.sp, color = QringPalette.textSecondary, maxLines = 1)
+                                    Text(parts[0].trim(), fontSize = 8.sp, color = QringPalette.textSecondary, maxLines = 1)
+                                    Text(parts[1].trim(), fontSize = 8.sp, color = QringPalette.textSecondary, maxLines = 1)
                                 } else {
-                                    Text(time, fontSize = 7.sp, color = QringPalette.textSecondary, maxLines = 1)
+                                    Text(time, fontSize = 8.sp, color = QringPalette.textSecondary, maxLines = 1)
                                 }
                             }
                         }
@@ -1087,7 +1326,7 @@ private fun ScheduleMergedCellBox(
                 if (entry.location.isNotBlank()) {
                     Text(
                         text = entry.location,
-                        fontSize = 7.sp,
+                        fontSize = 8.sp,
                         color = QringPalette.textSecondary,
                         maxLines = 1
                     )
@@ -1106,6 +1345,7 @@ private fun ScheduleConfigDialog(
     onSectionCountChange: (Int) -> Unit,
     onToggleSectionTime: (Boolean) -> Unit,
     onToggleWeekend: (Boolean) -> Unit,
+    onToggleLandscape: (Boolean) -> Unit,
     onSectionTimeChange: (Int, String) -> Unit
 ) {
     AlertDialog(
@@ -1158,6 +1398,25 @@ private fun ScheduleConfigDialog(
                 ) {
                     Text("包含周六日", fontSize = 14.sp)
                     Switch(checked = state.config.includeWeekend, onCheckedChange = onToggleWeekend)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 横版布局
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("横版打印", fontSize = 14.sp)
+                        Text(
+                            text = "整表旋转 90° 打印（长边沿出纸方向），横持查看仍是正常课程表",
+                            fontSize = 11.sp,
+                            color = QringPalette.textSecondary
+                        )
+                    }
+                    Switch(checked = state.config.landscape, onCheckedChange = onToggleLandscape)
                 }
 
                 // 节次时间编辑

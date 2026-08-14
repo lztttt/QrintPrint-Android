@@ -57,12 +57,16 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.qring.printer.data.HistoryPayloadHolder
 import com.qring.printer.model.HistoryRecord
 import com.qring.printer.model.HIST_TYPE_TEXT
+import com.qring.printer.model.HIST_TYPE_MATH
 import com.qring.printer.model.HIST_TYPE_IMAGE
 import com.qring.printer.model.HIST_TYPE_CODE
 import com.qring.printer.model.HIST_TYPE_CUSTOM
 import com.qring.printer.model.HIST_TYPE_SCHEDULE
 import com.qring.printer.model.HIST_TYPE_TODO
 import com.qring.printer.model.HIST_TYPE_WRONGBOOK
+import com.qring.printer.model.HIST_TYPE_WORDBOOK
+import com.qring.printer.model.HIST_TYPE_PDF
+import com.qring.printer.model.HIST_TYPE_BATCH
 import com.qring.printer.ui.theme.Metrics
 import com.qring.printer.ui.theme.QringPalette
 import org.json.JSONObject
@@ -238,12 +242,16 @@ private fun extractTags(payload: String): List<String> {
 
 private fun typeLabel(typeName: String): String = when (typeName) {
     HIST_TYPE_TEXT -> "文字打印"
+    HIST_TYPE_MATH -> "口算题"
     HIST_TYPE_IMAGE -> "图片打印"
     HIST_TYPE_CODE -> "条码打印"
     HIST_TYPE_CUSTOM -> "自定义打印"
     HIST_TYPE_SCHEDULE -> "课程表"
     HIST_TYPE_TODO -> "待办事项"
     HIST_TYPE_WRONGBOOK -> "错题本"
+    HIST_TYPE_WORDBOOK -> "单词本"
+    HIST_TYPE_PDF -> "PDF 打印"
+    HIST_TYPE_BATCH -> "批量打印"
     else -> "打印"
 }
 

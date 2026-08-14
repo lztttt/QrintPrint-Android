@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -55,10 +57,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -161,7 +166,7 @@ fun WordbookScreen(
                     WordbookRow(
                         book = book,
                         isSelected = book.id == uiState.selectedBookId,
-                        downloading = uiState.downloading && book.id == uiState.selectedBookId,
+                        downloading = uiState.downloadingBookId == book.id,
                         downloadProgress = uiState.downloadProgress,
                         onSelect = { viewModel.selectBook(book.id) },
                         onDownload = { viewModel.downloadBook(book.id) },
@@ -185,7 +190,9 @@ fun WordbookScreen(
         // 底部操作栏
         BottomActionBar(
             printing = uiState.printing,
-            canPrint = uiState.wordsToPrint.isNotEmpty(),
+            canPrint = uiState.wordsToPrint.isNotEmpty() &&
+                uiState.selectedBookId.isNotEmpty() &&
+                uiState.books.firstOrNull { it.id == uiState.selectedBookId }?.downloaded == true,
             resultMessage = uiState.resultMessage,
             resultOk = uiState.resultOk,
             onPrint = viewModel::print
@@ -322,7 +329,22 @@ private fun PrintOptionsCard(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // 进度输入框：可直接设置进度
+            // 进度输入框：可直接设置进度。
+            // 输入只在失焦 / 回车时提交，避免一边输入一边把进度重置成 0
+            var progressInput by remember(uiState.selectedBookId) { mutableStateOf(uiState.currentProgress.toString()) }
+            LaunchedEffect(uiState.currentProgress) {
+                progressInput = uiState.currentProgress.toString()
+            }
+            val focusManager = LocalFocusManager.current
+            val maxProgress = if (uiState.totalWords > 0) uiState.totalWords - 1 else 0
+            val commitProgress: () -> Unit = {
+                val parsed = progressInput.toIntOrNull() ?: uiState.currentProgress
+                val clamped = parsed.coerceIn(0, maxProgress)
+                progressInput = clamped.toString()
+                if (clamped != uiState.currentProgress) {
+                    viewModel.setProgress(clamped)
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -330,15 +352,18 @@ private fun PrintOptionsCard(
             ) {
                 Text("设置进度", fontSize = 13.sp, color = QringPalette.textSecondary)
                 OutlinedTextField(
-                    value = uiState.currentProgress.toString(),
-                    onValueChange = { input ->
-                        val num = input.filter { it.isDigit() }.toIntOrNull() ?: 0
-                        val maxProgress = if (uiState.totalWords > 0) uiState.totalWords - 1 else 0
-                        viewModel.setProgress(num.coerceIn(0, maxProgress))
-                    },
+                    value = progressInput,
+                    onValueChange = { input -> progressInput = input.filter { it.isDigit() } },
                     label = { Text("词序号", fontSize = 11.sp) },
-                    modifier = Modifier.width(100.dp),
+                    modifier = Modifier
+                        .width(100.dp)
+                        .onFocusChanged { if (!it.isFocused) commitProgress() },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        commitProgress()
+                        focusManager.clearFocus()
+                    }),
                     textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
                 )
             }

@@ -22,23 +22,36 @@ class HistoryRepository(private val context: Context) {
     private val imagesDir = File(context.filesDir, "history_images").apply { mkdirs() }
 
     /**
-     * 保存图片到内部存储，返回内部存储路径
+     * 通用：把 content:// 或 file:// 源拷贝到内部存储的子目录，返回内部路径。
+     * 用于规避 Uri 权限过期（PDF / 批量打印等长生命周期场景）。
      */
-    fun saveImageToInternalStorage(uriString: String): String? {
+    fun copyUriToInternal(uriString: String, subDir: String, prefix: String): String? {
         return try {
             val uri = android.net.Uri.parse(uriString)
             context.contentResolver.openInputStream(uri)?.use { input ->
-                val id = UUID.randomUUID().toString().take(8) + ".jpg"
-                val file = File(imagesDir, "img_$id")
+                val dir = File(context.filesDir, subDir).apply { mkdirs() }
+                val file = File(dir, prefix + UUID.randomUUID().toString().take(8) + ".bin")
                 file.outputStream().use { output ->
                     input.copyTo(output)
                 }
                 file.absolutePath
             }
         } catch (e: Exception) {
-            Timber.tag("HistoryRepo").e(e, "failed to copy image to internal storage")
+            Timber.tag("HistoryRepo").e(e, "failed to copy uri to internal storage")
             null
         }
+    }
+
+    /**
+     * 保存图片到内部存储，返回内部存储路径
+     */
+    fun saveImageToInternalStorage(uriString: String): String? {
+        return copyUriToInternal(uriString, "history_images", "img_")
+    }
+
+    /** 保存 PDF 到内部存储，返回内部存储路径 */
+    fun savePdfToInternalStorage(uriString: String): String? {
+        return copyUriToInternal(uriString, "pdfs", "pdf_")
     }
 
     /**

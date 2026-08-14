@@ -51,6 +51,7 @@ data class HistoryRecord(
 )
 
 const val HIST_TYPE_TEXT = "text"
+const val HIST_TYPE_MATH = "math"
 const val HIST_TYPE_IMAGE = "image"
 const val HIST_TYPE_CODE = "code"
 const val HIST_TYPE_CUSTOM = "custom"
@@ -59,3 +60,6 @@ const val HIST_TYPE_TODO = "todo"
 const val HIST_TYPE_TABLE = "table"
 const val HIST_TYPE_MARKDOWN = "markdown"
 const val HIST_TYPE_WRONGBOOK = "wrongbook"
+const val HIST_TYPE_WORDBOOK = "wordbook"
+const val HIST_TYPE_PDF = "pdf"
+const val HIST_TYPE_BATCH = "batch"

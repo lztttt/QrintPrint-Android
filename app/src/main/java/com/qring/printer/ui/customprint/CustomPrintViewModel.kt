@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 
 data class CustomPrintUiState(
     val doc: CanvasDoc = CanvasDoc(),
@@ -116,9 +117,17 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
                 val obj = org.json.JSONObject(payload)
                 val minLength = obj.optInt("minLength", 200)
                 val elementsArr = obj.optJSONArray("elements") ?: return@launch
+                val landscape = obj.optBoolean("landscape", false)
+                val thickness = obj.optInt("thickness", 1)
 
                 _uiState.value.doc.releaseAll()
-                _uiState.value = _uiState.value.copy(doc = CanvasDoc().apply { this.minLength = minLength })
+                _uiState.value = _uiState.value.copy(
+                    doc = CanvasDoc().apply {
+                        this.minLength = minLength
+                        this.landscape = landscape
+                    },
+                    thickness = thickness
+                )
 
                 for (i in 0 until elementsArr.length()) {
                     val elObj = elementsArr.getJSONObject(i)
@@ -128,17 +137,48 @@ class CustomPrintViewModel(application: Application) : AndroidViewModel(applicat
                         "CODE" -> ElementKind.CODE
                         else -> ElementKind.TEXT
                     }
+                    val optsObj = elObj.optJSONObject("textOptions")
+                    val textOptions = com.qring.printer.protocol.TextRenderOptions(
+                        fontFamily = optsObj?.optString("fontFamily", "sans-serif") ?: "sans-serif",
+                        fontSize = optsObj?.optDouble("fontSize", 24.0)?.toFloat() ?: 24f,
+                        bold = optsObj?.optBoolean("bold", false) ?: false,
+                        italic = optsObj?.optBoolean("italic", false) ?: false,
+                        underline = optsObj?.optBoolean("underline", false) ?: false,
+                        letterSpacing = optsObj?.optDouble("letterSpacing", 0.0)?.toFloat() ?: 0f,
+                        lineSpacing = optsObj?.optDouble("lineSpacing", 6.0)?.toFloat() ?: 6f,
+                        margin = optsObj?.optDouble("margin", 8.0)?.toFloat() ?: 8f,
+                        alignment = com.qring.printer.protocol.TextAlignment.entries
+                            .getOrElse(optsObj?.optInt("alignment", 0) ?: 0) { com.qring.printer.protocol.TextAlignment.LEFT }
+                    )
                     val el = CanvasElement(kind = kind).apply {
                         dotX = elObj.optInt("dotX", 0)
                         dotY = elObj.optInt("dotY", 0)
                         dotW = elObj.optInt("dotW", 100)
                         dotH = elObj.optInt("dotH", 100)
+                        aspect = elObj.optDouble("aspect", 1.0).toFloat()
+                        geometryLocked = elObj.optBoolean("geometryLocked", false)
+                        text = elObj.optString("text", "")
+                        this.textOptions = textOptions
+                        imageUri = elObj.optString("imageUri", "")
+                        ditherMode = com.qring.printer.protocol.DitherMode.entries
+                            .getOrElse(elObj.optInt("ditherMode", 1)) { com.qring.printer.protocol.DitherMode.FLOYD_STEINBERG }
+                        ditherThreshold = elObj.optInt("ditherThreshold", 128)
+                        codeContent = elObj.optString("codeContent", "")
+                        codeTypeIndex = elObj.optInt("codeTypeIndex", 0)
+                        rotation = elObj.optInt("rotation", 0)
+                        flipH = elObj.optBoolean("flipH", false)
+                        flipV = elObj.optBoolean("flipV", false)
+                        invert = elObj.optBoolean("invert", false)
                     }
+                    // 图片元素：保持保存时的几何（不重新按真实比例计算）
+                    if (el.kind == ElementKind.IMAGE) el.geometryLocked = true
                     _uiState.value.doc.add(el)
                     runRender(el)
                 }
                 updateComposite()
-            } catch (e: Exception) { }
+            } catch (e: Exception) {
+                Timber.tag("CustomVM").w(e, "restoreFromHistoryPayload failed")
+            }
         }
     }
 
@@ -624,26 +664,62 @@ runRender(sel)
                         printerConnection.printRaster(raster, _uiState.value.thickness.takeIf { it > 0 })
                     }
 
-                    // 打印成功后保存历史
+                    // 打印成功后保存历史（完整字段，支持重打还原）
                     if (printResult.ok) {
                         try {
-                            val elementsData = _uiState.value.doc.elements.map {
+                            // IMAGE 元素：content:// 先拷贝到内部存储，避免重打时权限过期
+                            val uriMap = mutableMapOf<String, String>()
+                            _uiState.value.doc.elements
+                                .filter { it.kind == ElementKind.IMAGE && it.imageUri.startsWith("content://") }
+                                .forEach {
+                                    val saved = historyRepo.saveImageToInternalStorage(it.imageUri)
+                                    if (saved != null) uriMap[it.imageUri] = saved
+                                }
+
+                            val elementsData = _uiState.value.doc.elements.map { el ->
                                 mapOf(
-                                    "kind" to it.kind.name,
-                                    "dotX" to it.dotX,
-                                    "dotY" to it.dotY,
-                                    "dotW" to it.dotW,
-                                    "dotH" to it.dotH
+                                    "kind" to el.kind.name,
+                                    "dotX" to el.dotX,
+                                    "dotY" to el.dotY,
+                                    "dotW" to el.dotW,
+                                    "dotH" to el.dotH,
+                                    "aspect" to el.aspect.toDouble(),
+                                    "geometryLocked" to el.geometryLocked,
+                                    "text" to el.text,
+                                    "imageUri" to (uriMap[el.imageUri] ?: el.imageUri),
+                                    "ditherMode" to el.ditherMode.code,
+                                    "ditherThreshold" to el.ditherThreshold,
+                                    "codeContent" to el.codeContent,
+                                    "codeTypeIndex" to el.codeTypeIndex,
+                                    "rotation" to el.rotation,
+                                    "flipH" to el.flipH,
+                                    "flipV" to el.flipV,
+                                    "invert" to el.invert,
+                                    "textOptions" to mapOf(
+                                        "fontFamily" to el.textOptions.fontFamily,
+                                        "fontSize" to el.textOptions.fontSize.toDouble(),
+                                        "bold" to el.textOptions.bold,
+                                        "italic" to el.textOptions.italic,
+                                        "underline" to el.textOptions.underline,
+                                        "letterSpacing" to el.textOptions.letterSpacing.toDouble(),
+                                        "lineSpacing" to el.textOptions.lineSpacing.toDouble(),
+                                        "margin" to el.textOptions.margin.toDouble(),
+                                        "alignment" to el.textOptions.alignment.ordinal
+                                    )
                                 )
                             }
                             val payload = org.json.JSONObject().apply {
                                 put("minLength", _uiState.value.doc.minLength)
+                                put("landscape", _uiState.value.doc.landscape)
+                                put("thickness", _uiState.value.thickness)
                                 put("elements", org.json.JSONArray().apply {
                                     elementsData.forEach { put(org.json.JSONObject(it)) }
                                 })
                             }.toString()
                             historyRepo.saveHistory(HIST_TYPE_CUSTOM, thumbBmp, payload)
-                        } catch (e: Exception) { }
+                        } catch (e: Exception) {
+                            Timber.tag("CustomVM").w(e, "saveHistory failed")
+                        }
                     }
 
                     fullBmp.recycle()

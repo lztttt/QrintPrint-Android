@@ -9,7 +9,7 @@ import timber.log.Timber
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URI
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 单词条目
@@ -47,22 +47,29 @@ class WordbookRepository(private val context: Context) {
     /** 词库下载服务器 */
     private val serverBase = "https://download.116384.xyz/json"
 
+    /**
+     * 已解析词条缓存（key = bookId）。
+     * 词库文件很大（几千词），每次预览/打印都全量解析会卡顿；
+     * 解析结果是不可变 List，可安全跨线程共享。
+     */
+    private val wordListCache = ConcurrentHashMap<String, List<VocabWord>>()
+
     /** 可用单词本列表（预置） — 顺序 + 乱序 */
     val availableBooks: List<WordbookInfo> = listOf(
-        WordbookInfo("1-初中-顺序", "初中 (顺序)", "$serverBase/1-初中-顺序.json"),
-        WordbookInfo("1-初中-乱序", "初中 (乱序)", "$serverBase/1-初中-乱序.json"),
-        WordbookInfo("2-高中-顺序", "高中 (顺序)", "$serverBase/2-高中-顺序.json"),
-        WordbookInfo("2-高中-乱序", "高中 (乱序)", "$serverBase/2-高中-乱序.json"),
-        WordbookInfo("3-CET4-顺序", "四级 (顺序)", "$serverBase/3-CET4-顺序.json"),
-        WordbookInfo("3-CET4-乱序", "四级 (乱序)", "$serverBase/3-CET4-乱序.json"),
-        WordbookInfo("4-CET6-顺序", "六级 (顺序)", "$serverBase/4-CET6-顺序.json"),
-        WordbookInfo("4-CET6-乱序", "六级 (乱序)", "$serverBase/4-CET6-乱序.json"),
-        WordbookInfo("5-考研-顺序", "考研 (顺序)", "$serverBase/5-考研-顺序.json"),
-        WordbookInfo("5-考研-乱序", "考研 (乱序)", "$serverBase/5-考研-乱序.json"),
-        WordbookInfo("6-托福-顺序", "托福 (顺序)", "$serverBase/6-托福-顺序.json"),
-        WordbookInfo("6-托福-乱序", "托福 (乱序)", "$serverBase/6-托福-乱序.json"),
-        WordbookInfo("7-SAT-顺序", "SAT (顺序)", "$serverBase/7-SAT-顺序.json"),
-        WordbookInfo("7-SAT-乱序", "SAT (乱序)", "$serverBase/7-SAT-乱序.json"),
+        WordbookInfo("1-初中-顺序", "初中 (顺序)", "${serverBase}/1-初中-顺序.json"),
+        WordbookInfo("1-初中-乱序", "初中 (乱序)", "${serverBase}/1-初中-乱序.json"),
+        WordbookInfo("2-高中-顺序", "高中 (顺序)", "${serverBase}/2-高中-顺序.json"),
+        WordbookInfo("2-高中-乱序", "高中 (乱序)", "${serverBase}/2-高中-乱序.json"),
+        WordbookInfo("3-CET4-顺序", "四级 (顺序)", "${serverBase}/3-CET4-顺序.json"),
+        WordbookInfo("3-CET4-乱序", "四级 (乱序)", "${serverBase}/3-CET4-乱序.json"),
+        WordbookInfo("4-CET6-顺序", "六级 (顺序)", "${serverBase}/4-CET6-顺序.json"),
+        WordbookInfo("4-CET6-乱序", "六级 (乱序)", "${serverBase}/4-CET6-乱序.json"),
+        WordbookInfo("5-考研-顺序", "考研 (顺序)", "${serverBase}/5-考研-顺序.json"),
+        WordbookInfo("5-考研-乱序", "考研 (乱序)", "${serverBase}/5-考研-乱序.json"),
+        WordbookInfo("6-托福-顺序", "托福 (顺序)", "${serverBase}/6-托福-顺序.json"),
+        WordbookInfo("6-托福-乱序", "托福 (乱序)", "${serverBase}/6-托福-乱序.json"),
+        WordbookInfo("7-SAT-顺序", "SAT (顺序)", "${serverBase}/7-SAT-顺序.json"),
+        WordbookInfo("7-SAT-乱序", "SAT (乱序)", "${serverBase}/7-SAT-乱序.json"),
     )
 
     /** 获取已下载的单词本列表（带本地路径和词数） */
@@ -84,10 +91,11 @@ class WordbookRepository(private val context: Context) {
 
     /** 下载单词本 */
     suspend fun download(book: WordbookInfo, onProgress: ((Float) -> Unit)? = null): Boolean = withContext(Dispatchers.IO) {
+        invalidateCache(book.id)
         // 乱序版：下载对应的顺序版，然后本地打乱
         val actualUrl = if (book.id.contains("乱序")) {
             val orderedId = book.id.replace("乱序", "顺序")
-            "$serverBase/$orderedId.json"
+            "${serverBase}/${orderedId}.json"
         } else {
             book.url
         }
@@ -126,7 +134,13 @@ class WordbookRepository(private val context: Context) {
         }
     }
 
-    /** 实际下载逻辑（手动处理 HTTP 重定向） */
+    /**
+     * 实际下载逻辑（手动处理 HTTP 重定向）。
+     *
+     * 先写临时文件、全部落盘成功后再原子替换目标文件：
+     * 下载中断/失败时不会在 wordbooks/ 下残留半截 JSON，
+     * 避免 isDownloaded 把损坏文件误判为「已下载」。
+     */
     private fun tryDownload(urlStr: String, bookId: String, onProgress: ((Float) -> Unit)?): Boolean {
         return try {
             var currentUrl = encodeUrl(urlStr)
@@ -174,12 +188,13 @@ class WordbookRepository(private val context: Context) {
             }
 
             val total = conn.contentLength.toFloat()
-            val file = File(wordbooksDir, "$bookId.json")
+            val tmpFile = File(wordbooksDir, "$bookId.json.tmp")
             var lastProgress = 0f
 
             try {
+                tmpFile.delete() // 清理上次中断残留
                 conn.inputStream.use { input ->
-                    file.outputStream().use { output ->
+                    tmpFile.outputStream().use { output ->
                         val buf = ByteArray(8192)
                         var read: Int
                         var downloaded = 0L
@@ -196,9 +211,17 @@ class WordbookRepository(private val context: Context) {
                         }
                     }
                 }
+                // 全部落盘成功，原子替换正式文件
+                val target = File(wordbooksDir, "$bookId.json")
+                target.delete()
+                if (!tmpFile.renameTo(target)) {
+                    // 同目录下 rename 一般不会失败，兜底用复制
+                    tmpFile.copyTo(target, overwrite = true)
+                }
                 true
             } finally {
                 conn.disconnect()
+                if (tmpFile.exists()) tmpFile.delete()
             }
         } catch (e: Exception) {
             Timber.tag("WordbookRepo").e(e, "download failed: $urlStr")
@@ -235,38 +258,39 @@ class WordbookRepository(private val context: Context) {
     /** 删除已下载的单词本 */
     fun delete(bookId: String) {
         File(wordbooksDir, "$bookId.json").delete()
+        File(wordbooksDir, "$bookId.json.tmp").delete()
         prefs.edit().remove("count_$bookId").remove("progress_$bookId").apply()
+        invalidateCache(bookId)
+    }
+
+    /** 下载/删除后清掉解析缓存 */
+    private fun invalidateCache(bookId: String) {
+        wordListCache.remove(bookId)
     }
 
     /** 获取单词本的词数 */
     fun getWordCount(bookId: String): Int {
         val cached = prefs.getInt("count_$bookId", -1)
         if (cached >= 0) return cached
-
-        val file = File(wordbooksDir, "$bookId.json")
-        if (!file.exists()) return 0
-
-        return try {
-            val json = file.readText()
-            val arr = JSONArray(json)
-            val count = arr.length()
-            prefs.edit().putInt("count_$bookId", count).apply()
-            count
-        } catch (e: Exception) {
-            0
-        }
+        val count = loadAllWords(bookId).size
+        prefs.edit().putInt("count_$bookId", count).apply()
+        return count
     }
 
-    /** 读取单词本中指定范围的单词 */
-    fun loadWords(bookId: String, offset: Int, limit: Int): List<VocabWord> {
+    /**
+     * 解析整本词库（带缓存）。
+     * 全量解析只做一次，之后 loadWords 直接切片，避免每次预览都读文件 + 解析 JSON。
+     */
+    private fun loadAllWords(bookId: String): List<VocabWord> {
+        wordListCache[bookId]?.let { return it }
+
         val file = File(wordbooksDir, "$bookId.json")
         if (!file.exists()) return emptyList()
 
         return try {
             val arr = JSONArray(file.readText())
-            val end = minOf(offset + limit, arr.length())
             val words = mutableListOf<VocabWord>()
-            for (i in offset until end) {
+            for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
                 val word = obj.optString("word", "")
 
@@ -298,11 +322,21 @@ class WordbookRepository(private val context: Context) {
                     words.add(VocabWord(word, translations, phrases))
                 }
             }
+            wordListCache[bookId] = words
             words
         } catch (e: Exception) {
             Timber.tag("WordbookRepo").e(e, "loadWords failed")
             emptyList()
         }
+    }
+
+    /** 读取单词本中指定范围的单词 */
+    fun loadWords(bookId: String, offset: Int, limit: Int): List<VocabWord> {
+        val all = loadAllWords(bookId)
+        if (all.isEmpty()) return emptyList()
+        if (offset < 0 || offset >= all.size) return emptyList()
+        val end = minOf(offset + limit, all.size)
+        return all.subList(offset, end)
     }
 
     // ── 打印进度 ──────────────────────────────────────────────

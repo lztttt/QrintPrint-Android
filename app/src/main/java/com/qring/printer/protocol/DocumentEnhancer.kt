@@ -90,6 +90,48 @@ object DocumentEnhancer {
     }
 
     /**
+     * 对已缩放到打印宽度的灰度图直接增强，输出二值数组（1=黑前景，0=白背景）。
+     *
+     * 与 [enhance] 共用同一套算法（背景归一化 + Sauvola + 去噪），
+     * 但省去 Bitmap 往返，供 PDF / 批量等灰度管线直接复用。
+     *
+     * @return 尺寸与 gray 相同的 ByteArray，1=黑，0=白
+     */
+    fun enhanceGray(gray: GrayImage, windowSize: Int = 25, k: Float = 0.2f, denoise: Boolean = true): ByteArray {
+        val w = gray.width
+        val h = gray.height
+        val data = gray.data
+
+        // 1. 背景归一化：大核局部均值估计背景光照，bg / orig → 补偿阴影
+        val bgWindow = maxOf(windowSize * 4, 75) or 1
+        val bg = computeLocalMean(data, w, h, bgWindow)
+        val normGray = IntArray(w * h)
+        for (i in data.indices) {
+            val bgVal = bg[i].coerceAtLeast(1)
+            normGray[i] = (data[i].toFloat() / bgVal.toFloat() * 255f).toInt().coerceIn(0, 255)
+        }
+
+        // 2. Sauvola 自适应二值化
+        val sw = windowSize or 1
+        val mean = computeLocalMean(normGray, w, h, sw)
+        val std = computeLocalStd(normGray, w, h, sw, mean)
+
+        val binary = ByteArray(w * h)
+        for (i in normGray.indices) {
+            val m = mean[i]
+            val s = std[i]
+            val t = m * (1.0f + k * (s / 128.0f - 1.0f))
+            binary[i] = if (normGray[i] < t) 1 else 0
+        }
+
+        // 3. 去噪
+        if (denoise) {
+            denoiseBinary(binary, w, h)
+        }
+        return binary
+    }
+
+    /**
      * 用积分图计算局部均值。
      */
     private fun computeLocalMean(data: IntArray, w: Int, h: Int, window: Int): IntArray {
