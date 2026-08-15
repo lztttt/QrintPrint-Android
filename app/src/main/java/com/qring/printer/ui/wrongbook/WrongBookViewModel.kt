@@ -11,13 +11,12 @@ import com.qring.printer.model.ConnState
 import com.qring.printer.model.HIST_TYPE_WRONGBOOK
 import com.qring.printer.model.PrinterStatusRepository
 import com.qring.printer.protocol.WIDTH_DOTS
-import com.qring.printer.protocol.bitmapToGray
+import com.qring.printer.protocol.bitmapToGrayRaw
 import com.qring.printer.protocol.binaryToPreviewBitmap
 import com.qring.printer.protocol.DocumentEnhancer
 import com.qring.printer.protocol.GrayImage
 import com.qring.printer.protocol.packBinaryToRaster
-import com.qring.printer.protocol.rotateBinary
-import com.qring.printer.protocol.scaleBinaryToWidth
+
 import com.qring.printer.protocol.flipBinaryHorizontal
 import com.qring.printer.protocol.invertBinary
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +38,12 @@ data class WrongBookState(
     val croppedBitmap: Bitmap? = null,
     val enhancedBitmap: Bitmap? = null,
     val previewBitmap: Bitmap? = null,
+    /** Sauvola 窗口（15~35 奇数，越大越平滑） */
+    val sauvolaWindow: Int = 15,
+    /** Sauvola k 值（0.10~0.40，越大越敏感，笔画越粗） */
+    val sauvolaK: Float = 0.2f,
+    /** 二值化方式：0 = Sauvola（默认），1 = Wolf-Jolion，2 = Bradley */
+    val binarizeMode: Int = 0,
     /** 旋转角度 0/90/180/270 */
     val rotation: Int = 0,
     /** 水平翻转 */
@@ -82,6 +87,9 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
                 val rotation = json.optInt("rotation", 0)
                 val flipH = json.optBoolean("flipH", false)
                 val invert = json.optBoolean("invert", false)
+                val sauvolaWindow = json.optInt("sauvolaWindow", 15)
+                val sauvolaK = json.optDouble("sauvolaK", 0.2).toFloat()
+                val binarizeMode = json.optInt("binarizeMode", 0)
                 val fullImagePath = json.optString("fullImagePath", "")
 
                 // 优先加载全分辨率图，没有则用缩略图
@@ -105,13 +113,25 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
                 if (scaled != bmp) bmp.recycle()
 
                 val preview = withContext(Dispatchers.Default) {
-                    generatePreview(scaled, WrongBookState(rotation = rotation, flipH = flipH, invert = invert))
+                    val st = WrongBookState(
+                        sauvolaWindow = sauvolaWindow,
+                        sauvolaK = sauvolaK,
+                        binarizeMode = binarizeMode,
+                        rotation = rotation,
+                        flipH = flipH,
+                        invert = invert
+                    )
+                    val (binary, w, h) = processToPrint(scaled, st)
+                    binaryToPreviewBitmap(binary, w, h, false)
                 }
 
                 _state.value = _state.value.copy(
                     enhancedBitmap = scaled,
                     previewBitmap = preview,
                     step = WrongBookStep.ENHANCE,
+                    sauvolaWindow = sauvolaWindow,
+                    sauvolaK = sauvolaK,
+                    binarizeMode = binarizeMode,
                     rotation = rotation,
                     flipH = flipH,
                     invert = invert,
@@ -173,6 +193,28 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    /** 设置 Sauvola 窗口（15~35，取奇数），实时重排预览 */
+    fun setSauvolaWindow(window: Int) {
+        val w = window.coerceIn(15, 35)
+        val odd = if (w % 2 == 0) w + 1 else w
+        _state.value = _state.value.copy(sauvolaWindow = odd)
+        reRender()
+    }
+
+    /** 设置 Sauvola k 值（0.10~0.40），实时重排预览 */
+    fun setSauvolaK(k: Float) {
+        _state.value = _state.value.copy(sauvolaK = k.coerceIn(0.10f, 0.40f))
+        reRender()
+    }
+
+    /** 切换二值化方式（0=Sauvola，1=Wolf，2=Bradley） */
+    fun setBinarizeMode(mode: Int) {
+        if (mode !in 0..2) return
+        if (_state.value.binarizeMode == mode) return
+        _state.value = _state.value.copy(binarizeMode = mode)
+        reRender()
+    }
+
     fun setRotation(degrees: Int) {
         _state.value = _state.value.copy(rotation = ((degrees % 360) + 360) % 360)
         reRender()
@@ -214,7 +256,9 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
     fun backToCrop() { _state.value = _state.value.copy(step = WrongBookStep.CROP) }
 
     /**
-     * 文档增强 (Sauvola 自适应二值化)
+     * 文档增强（本地高分辨率管线）：
+     * 源分辨率灰度归一化（光照补偿）→ 缩放后三种自适应二值化（Sauvola/Wolf/Bradley）。
+     * 云端增强 API 待接入（选型见产品调研）。
      */
     fun enhance() {
         val cropped = _state.value.croppedBitmap ?: return
@@ -223,12 +267,10 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 val result = withContext(Dispatchers.Default) {
-                    val scaled = Bitmap.createScaledBitmap(
-                        cropped, WIDTH_DOTS,
-                        (cropped.height.toFloat() / cropped.width * WIDTH_DOTS).toInt(), true
-                    )
-                    val enhanced = DocumentEnhancer.enhance(scaled, windowSize = 25, k = 0.2f, denoise = true)
-                    val preview = generatePreview(enhanced, _state.value)
+                    // 高分辨率灰度归一化，最后在 384 上按所选方式二值化
+                    val enhanced = DocumentEnhancer.enhanceHighResGray(cropped)
+                    val (binary, w, h) = processToPrint(enhanced, _state.value)
+                    val preview = binaryToPreviewBitmap(binary, w, h, false)
                     Pair(enhanced, preview)
                 }
                 _state.value.enhancedBitmap?.recycle()
@@ -246,6 +288,58 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
+     * 统一后处理：
+     * Bitmap 域旋转（90° 无损）→ 灰度域缩放到 384（保留渐变）→
+     * 按算法二值化（算法1：384 上 Sauvola；算法2：阈值 128）→ 翻转/反色 → 连通域去噪。
+     *
+     * 关键：**不做形态学闭运算** —— 闭运算会填掉密集小字的笔画间隙，导致文字糊成一坨。
+     * 输入 enhancedBitmap 由 state 持有，函数内部不会 recycle 它。
+     */
+    private fun processToPrint(enhanced: Bitmap, state: WrongBookState): Triple<ByteArray, Int, Int> {
+        var bmp = enhanced
+        var owned = false
+
+        // 1. 旋转（Bitmap 域，90° 像素级无损）
+        if (state.rotation % 360 != 0) {
+            val matrix = android.graphics.Matrix().apply { postRotate(state.rotation.toFloat()) }
+            bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+            owned = true
+        }
+
+        // 2. 灰度域缩放到 384 宽（双线性保留灰度渐变，避免二值图缩放糊边）
+        if (bmp.width != WIDTH_DOTS) {
+            val th = maxOf(1, Math.round(bmp.height.toFloat() * WIDTH_DOTS / bmp.width))
+            val scaled = Bitmap.createScaledBitmap(bmp, WIDTH_DOTS, th, true)
+            if (owned) bmp.recycle()
+            bmp = scaled
+            owned = true
+        }
+
+        val w = WIDTH_DOTS
+        val h = bmp.height
+        // 灰度图 → 384 打印分辨率上自适应二值化（清晰不糊、不锯齿）
+        val gray = bitmapToGrayRaw(bmp)
+        if (owned) bmp.recycle()
+        val binary = DocumentEnhancer.enhanceGray(
+            gray,
+            windowSize = state.sauvolaWindow,
+            k = state.sauvolaK,
+            denoise = true,
+            mode = state.binarizeMode
+        )
+
+        // 3. 翻转 / 反色
+        var out = binary
+        if (state.flipH) out = flipBinaryHorizontal(out, w, h)
+        if (state.invert) out = invertBinary(out, w, h)
+
+        // 4. 连通域去噪（只去小团噪点，不伤笔画）
+        DocumentEnhancer.removeSmallComponents(out, w, h, 4)
+
+        return Triple(out, w, h)
+    }
+
+    /**
      * 根据当前 state 重新生成预览
      */
     fun reRender() {
@@ -255,37 +349,13 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val oldPreview = _state.value.previewBitmap
                 val preview = withContext(Dispatchers.Default) {
-                    generatePreview(enhanced, state)
+                    val (binary, w, h) = processToPrint(enhanced, state)
+                    binaryToPreviewBitmap(binary, w, h, false)
                 }
                 _state.value = _state.value.copy(previewBitmap = preview)
                 oldPreview?.let { if (it != preview) it.recycle() }
             } catch (e: Exception) { }
         }
-    }
-
-    private fun generatePreview(enhanced: Bitmap, state: WrongBookState): Bitmap {
-        // enhanced 已经是二值图，直接转 binary 数组处理
-        val gray = bitmapToGray(enhanced)
-        var binary = ByteArray(gray.width * gray.height)
-        for (i in binary.indices) {
-            binary[i] = if (gray.data[i] < 128) 1 else 0
-        }
-        var w = gray.width
-        var h = gray.height
-
-        if (state.rotation % 360 != 0) {
-            val (rot, nw, nh) = rotateBinary(binary, w, h, state.rotation)
-            binary = rot; w = nw; h = nh
-            // 旋转后宽度可能不是 384，等比缩放回 384
-            if (w != WIDTH_DOTS) {
-                val (sb, sw, sh) = scaleBinaryToWidth(binary, w, h, WIDTH_DOTS)
-                binary = sb; w = sw; h = sh
-            }
-        }
-        if (state.flipH) binary = flipBinaryHorizontal(binary, w, h)
-        if (state.invert) binary = invertBinary(binary, w, h)
-
-        return binaryToPreviewBitmap(binary, w, h, false)
     }
 
     /**
@@ -312,23 +382,8 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val state = _state.value
                 val result = withContext(Dispatchers.Default) {
-                    val gray = bitmapToGray(enhanced)
-                    var binary = ByteArray(gray.width * gray.height)
-                    for (i in binary.indices) binary[i] = if (gray.data[i] < 128) 1 else 0
-                    var w = gray.width
-                    var h = gray.height
-
-                    if (state.rotation % 360 != 0) {
-                        val (rot, nw, nh) = rotateBinary(binary, w, h, state.rotation)
-                        binary = rot; w = nw; h = nh
-                        if (w != WIDTH_DOTS) {
-                            val (sb, sw, sh) = scaleBinaryToWidth(binary, w, h, WIDTH_DOTS)
-                            binary = sb; w = sw; h = sh
-                        }
-                    }
-                    if (state.flipH) binary = flipBinaryHorizontal(binary, w, h)
-                    if (state.invert) binary = invertBinary(binary, w, h)
-
+                    // 统一后处理（旋转/抗锯齿缩放/形态学/去噪），与预览一致
+                    val (binary, w, h) = processToPrint(enhanced, state)
                     val raster = packBinaryToRaster(binary, w, h)
 
                     val fullBmp = binaryToPreviewBitmap(binary, w, h, false)
@@ -342,6 +397,9 @@ class WrongBookViewModel(application: Application) : AndroidViewModel(applicatio
                         try {
                             val payload = JSONObject().apply {
                                 put("tags", state.selectedTags.joinToString(","))
+                                put("sauvolaWindow", state.sauvolaWindow)
+                                put("sauvolaK", state.sauvolaK.toDouble())
+                                put("binarizeMode", state.binarizeMode)
                                 put("rotation", state.rotation)
                                 put("flipH", state.flipH)
                                 put("invert", state.invert)

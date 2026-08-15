@@ -22,11 +22,21 @@ const val WIDTH_DOTS: Int = 384
 /** 每行字节数 384/8 = 48，无补位 */
 const val WIDTH_BYTES: Int = 48
 
-/** SDK 单次 write 上限，超过要分包 */
-const val CHUNK_SIZE: Int = 1024
+/**
+ * 单次 write 上限。
+ *
+ * 本 App 走经典蓝牙 SPP（RFCOMM）：流式协议，链路层自带完整流控
+ * （写满缓冲会阻塞背压），固件按字节流连续解析，**不需要人工分包延时**。
+ * 分包 + 延时会让固件把包间停顿误判为「数据接收结束」，丢弃后续光栅
+ * → 打印断层 + 无 ACK 超时。所以 SPP 下大块快速连续写。
+ *
+ * 注：133 字节分包 / 0ms 是 BLE 通道的参数（MTU 136-3，且带响应写自带
+ * 逐包流控），与 SPP 不同，不能照搬。
+ */
+const val CHUNK_SIZE: Int = 4096
 
-/** 分包之间的间隔，照搬 SDK 行为 */
-const val CHUNK_DELAY_MS: Long = 1L
+/** 分包之间的间隔：SPP 链路自带流控，保持 0 连续写 */
+const val CHUNK_DELAY_MS: Long = 0L
 
 // ── 字节构造 ──────────────────────────────────────────────
 

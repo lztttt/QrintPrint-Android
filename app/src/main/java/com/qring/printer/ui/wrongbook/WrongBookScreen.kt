@@ -45,6 +45,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -202,6 +204,32 @@ private fun SelectStep(onCamera: () -> Unit, onGallery: () -> Unit) {
 
 // ── 增强步骤 ────────────────────────────────────────────
 
+@Composable
+private fun ModeChip(
+    label: String,
+    hint: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) QringPalette.brand.copy(alpha = 0.12f) else QringPalette.surfaceSunken)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 8.dp, vertical = 8.dp)
+    ) {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) QringPalette.brand else QringPalette.textPrimary
+        )
+        Text(text = hint, fontSize = 9.sp, color = QringPalette.textSecondary)
+    }
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun EnhanceStep(state: WrongBookState, viewModel: WrongBookViewModel) {
@@ -242,6 +270,86 @@ private fun EnhanceStep(state: WrongBookState, viewModel: WrongBookViewModel) {
                         Image(bitmap = bmp.asImageBitmap(), contentDescription = "增强结果", modifier = Modifier.fillMaxWidth(), contentScale = ContentScale.Fit)
                     }
                 }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 增强设置
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = QringPalette.surface)) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("文档增强", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = QringPalette.textPrimary)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "本地高清增强：灰度光照补偿 → 384 分辨率自适应二值化（云端增强 API 接入中）",
+                    fontSize = 10.sp,
+                    color = QringPalette.textSecondary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("二值化方式", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = QringPalette.textPrimary)
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ModeChip(
+                        label = "Sauvola",
+                        hint = "印刷文档标准",
+                        selected = state.binarizeMode == 0,
+                        modifier = Modifier.weight(1f),
+                        enabled = !state.processing,
+                        onClick = { viewModel.setBinarizeMode(0) }
+                    )
+                    ModeChip(
+                        label = "Wolf",
+                        hint = "抑制白纸噪声/铅笔手写",
+                        selected = state.binarizeMode == 1,
+                        modifier = Modifier.weight(1f),
+                        enabled = !state.processing,
+                        onClick = { viewModel.setBinarizeMode(1) }
+                    )
+                    ModeChip(
+                        label = "Bradley",
+                        hint = "仅均值，最快",
+                        selected = state.binarizeMode == 2,
+                        modifier = Modifier.weight(1f),
+                        enabled = !state.processing,
+                        onClick = { viewModel.setBinarizeMode(2) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text("细节窗口", fontSize = 12.sp, color = QringPalette.textPrimary, modifier = Modifier.weight(1f))
+                    Text("${state.sauvolaWindow}px", fontSize = 12.sp, color = QringPalette.brand)
+                }
+                Slider(
+                    value = state.sauvolaWindow.toFloat(),
+                    onValueChange = { viewModel.setSauvolaWindow(Math.round(it).toInt()) },
+                    valueRange = 15f..35f,
+                    enabled = !state.processing,
+                    colors = SliderDefaults.colors(thumbColor = QringPalette.brand, activeTrackColor = QringPalette.brand)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text("增强强度 k", fontSize = 12.sp, color = QringPalette.textPrimary, modifier = Modifier.weight(1f))
+                    Text("${"%.2f".format(state.sauvolaK)}", fontSize = 12.sp, color = QringPalette.brand)
+                }
+                Slider(
+                    value = state.sauvolaK,
+                    onValueChange = { viewModel.setSauvolaK(it) },
+                    valueRange = 0.10f..0.40f,
+                    enabled = !state.processing,
+                    colors = SliderDefaults.colors(thumbColor = QringPalette.brand, activeTrackColor = QringPalette.brand)
+                )
+                Text(
+                    text = when (state.binarizeMode) {
+                        1 -> "Wolf：k 大→背景抑制更强；窗口大→笔画更连贯"
+                        2 -> "Bradley：k 即阈值 t/100（默认 0.2→20）"
+                        else -> "Sauvola：窗口大→笔画更连贯；k 大→更敏感/笔画偏粗"
+                    },
+                    fontSize = 10.sp,
+                    color = QringPalette.textSecondary
+                )
+
+
             }
         }
 

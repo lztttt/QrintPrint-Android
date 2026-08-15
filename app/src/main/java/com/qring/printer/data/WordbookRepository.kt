@@ -44,8 +44,8 @@ class WordbookRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("qringprint_wordbook", Context.MODE_PRIVATE)
     private val wordbooksDir = File(context.filesDir, "wordbooks").apply { mkdirs() }
 
-    /** 词库下载服务器 */
-    private val serverBase = "https://download.116384.xyz/json"
+    /** 词库下载服务器（国内 HTTP 服务器） */
+    private val serverBase = "http://47.95.211.196:8083/english-vocabulary/json"
 
     /**
      * 已解析词条缓存（key = bookId）。

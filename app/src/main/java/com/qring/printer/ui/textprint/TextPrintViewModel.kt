@@ -16,14 +16,12 @@ import com.qring.printer.protocol.TextRenderOptions
 import com.qring.printer.ui.common.FontList
 import com.qring.printer.protocol.bitmapToRaster
 import com.qring.printer.protocol.renderTextToPixelMap
-import com.qring.printer.protocol.rotateBinary
+import com.qring.printer.protocol.renderTextToPixelMapIn
 import com.qring.printer.protocol.packBinaryToRaster
 import com.qring.printer.protocol.bitmapToGray
 import com.qring.printer.protocol.ditherToBinary
 import com.qring.printer.protocol.DitherMode
 import com.qring.printer.protocol.GrayImage
-import com.qring.printer.protocol.createBinaryCanvas
-import com.qring.printer.protocol.blitBinary
 import com.qring.printer.protocol.TextAlignment as ProtoTextAlignment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -62,7 +60,9 @@ data class TextPrintUiState(
     val thickness: Int = 1,
     // 横排模式：true = 侧向打印
     val landscape: Boolean = false,
-    // 横排模式下文字高度是否超限（>384点）
+    // 横排目标打印宽度（点）：0 = 自适应原尺寸，>0 = 缩放到指定宽度（100~1200）
+    val landscapeTargetWidth: Int = 0,
+    // 横排模式下内容宽度是否超限（目标宽>384点，自动分块）
     val landscapeOverflow: Boolean = false,
     // 文字对齐方式
     val alignment: TextAlignment = TextAlignment.LEFT,
@@ -103,7 +103,8 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                 pageMargin = obj.optDouble("pageMargin", 8.0).toFloat(),
                 fontFamilyIndex = obj.optInt("fontIndex", 0),
                 thickness = obj.optInt("thickness", 1),
-                landscape = obj.optBoolean("landscape", false)
+                landscape = obj.optBoolean("landscape", false),
+                landscapeTargetWidth = obj.optInt("landscapeTargetWidth", 0).coerceIn(0, 1200)
             )
         } catch (e: Exception) { }
     }
@@ -154,6 +155,36 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
     fun setLandscape(landscape: Boolean) {
         _uiState.value = _uiState.value.copy(landscape = landscape)
         updatePreview()
+    }
+
+    /**
+     * 设置横排目标打印宽度（点）。
+     * 0 = 自适应原尺寸；100~1200 = 缩放到指定宽度（超 384 自动分段）。
+     */
+    fun setLandscapeTargetWidth(width: Int) {
+        val w = if (width <= 0) 0 else width.coerceIn(100, 1200)
+        _uiState.value = _uiState.value.copy(landscapeTargetWidth = w)
+        updatePreview()
+    }
+
+    /** 横排实际打印宽度（点）：目标宽度 > 0 用之，否则为旋转后原宽（文本高度） */
+    fun landscapePrintWidth(): Int {
+        val st = _uiState.value
+        val h = _uiState.value.previewBitmap?.height ?: 0
+        return if (st.landscapeTargetWidth > 0) st.landscapeTargetWidth else h
+    }
+
+    /**
+     * 渲染文本位图。
+     * 竖排：固定 384 宽折行；横排：折行宽度 = 打印宽度（目标 > 0 时），
+     * 返回 W×H（W=折行宽/打印宽，H=行数高度），字符不被拉伸。
+     */
+    private fun renderBitmap(): android.graphics.Bitmap {
+        val st = _uiState.value
+        if (!st.landscape || st.landscapeTargetWidth <= 0) {
+            return renderTextToPixelMap(st.text, buildOptions())
+        }
+        return renderTextToPixelMapIn(st.text, buildOptions(), st.landscapeTargetWidth.toFloat())
     }
 
     fun setAlignment(alignment: TextAlignment) {
@@ -262,9 +293,10 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val old = _uiState.value.previewBitmap
                 val bitmap = withContext(Dispatchers.Default) {
-                    val bmp = renderTextToPixelMap(state.text, buildOptions())
-                    // 检查横排高度限制
-                    val overflow = state.landscape && bmp.height > 384
+                    val bmp = renderBitmap()
+                    // 横排：旋转 90° 后纸宽方向 = 行数高度 H（须 ≤ 384），纸长 = 打印宽度
+                    val rowCount = bmp.height  // 渲染图高 = 行数高度（横排时）
+                    val overflow = state.landscape && rowCount > com.qring.printer.protocol.WIDTH_DOTS
                     _uiState.value = _uiState.value.copy(landscapeOverflow = overflow)
                     // 横排预览：不旋转，文字正着显示（和自定义画布一样）
                     // 打印时才旋转数据
@@ -313,15 +345,43 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
 
                 // 渲染 + 光栅化 + 打印
                 val result = withContext(Dispatchers.Default) {
-                    val bitmap = renderTextToPixelMap(state.text, buildOptions())
-                    val raster = if (state.landscape) {
-                        // 横排打印：bitmap → binary → 旋转 270°CW → H×384 → raster
-                        val gray = bitmapToGray(bitmap)
+                    val bitmap = renderBitmap()
+                    // 横排打印：文本按「打印宽度」折行渲染（W×H）→ 旋转 90° 得 H×W →
+                    // 纸宽方向（行数 H）须 ≤ 384，纸长方向 = 打印宽度 W 沿长分块拼接。
+                    val printAction: suspend () -> com.qring.printer.bt.PrintResult = if (state.landscape) {
+                        val m = android.graphics.Matrix().apply { postRotate(90f) }
+                        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
+                        val gray = bitmapToGray(rotated)
+                        rotated.recycle()
                         val binary = ditherToBinary(gray, DitherMode.NONE, 211)
-                        val (rot, rw, rh) = rotateBinary(binary, gray.width, gray.height, 270)
-                        packBinaryToRaster(rot, rw, rh)
+                        // 旋转后：宽 = 原行数高度 H（须 ≤ 384），高 = 原折行宽度 W（纸长）
+                        val rowCount = gray.width   // 行数高度（纸宽方向）
+                        val printLen = gray.height  // 打印宽度（纸长方向）
+                        if (rowCount > com.qring.printer.protocol.WIDTH_DOTS) {
+                            // 行数超过纸宽放不下（提示源自 updatePreview 的 overflow）
+                            suspend { com.qring.printer.bt.PrintResult(false, "横排行数超过纸宽(384点)，请减小行数或字号") }
+                        } else if (printLen <= com.qring.printer.protocol.WIDTH_DOTS) {
+                            // 单块：纸宽 rowCount（右补到 384），纸长 printLen
+                            val raster = packBinaryToRaster(binary, rowCount, printLen)
+                            suspend { printerConnection.printRaster(raster, state.thickness.takeIf { it > 0 }) }
+                        } else {
+                            // 纸长超过 384：沿高方向切块（每块高 384，宽 rowCount 补到 384）
+                            val chunks = mutableListOf<com.qring.printer.protocol.RasterData>()
+                            var off = 0
+                            while (off < printLen) {
+                                val bh = minOf(com.qring.printer.protocol.WIDTH_DOTS, printLen - off)
+                                val block = ByteArray(rowCount * bh)
+                                for (y in 0 until bh) {
+                                    System.arraycopy(binary, (off + y) * rowCount, block, y * rowCount, rowCount)
+                                }
+                                chunks.add(packBinaryToRaster(block, rowCount, bh))
+                                off += com.qring.printer.protocol.WIDTH_DOTS
+                            }
+                            suspend { printerConnection.printRasterChunks(chunks, state.thickness.takeIf { it > 0 }) }
+                        }
                     } else {
-                        bitmapToRaster(bitmap, 211)
+                        val raster = bitmapToRaster(bitmap, 211)
+                        suspend { printerConnection.printRaster(raster, state.thickness.takeIf { it > 0 }) }
                     }
 
                     // 生成缩略图用于历史记录
@@ -337,7 +397,7 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                     }
 
                     val printResult = withContext(Dispatchers.IO) {
-                        printerConnection.printRaster(raster, state.thickness.takeIf { it > 0 })
+                        printAction()
                     }
 
                     // 打印成功后保存历史
@@ -355,6 +415,7 @@ class TextPrintViewModel(application: Application) : AndroidViewModel(applicatio
                                 put("fontIndex", state.fontFamilyIndex)
                                 put("thickness", state.thickness)
                                 put("landscape", state.landscape)
+                                put("landscapeTargetWidth", state.landscapeTargetWidth)
                             }.toString()
                             historyRepo.saveHistory(HIST_TYPE_TEXT, thumbBitmap, payload)
                         } catch (e: Exception) { }

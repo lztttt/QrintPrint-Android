@@ -2,7 +2,9 @@ package com.qring.printer.ui.codeprint
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.net.wifi.WifiManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,6 +15,7 @@ import com.google.zxing.common.BitMatrix
 import com.google.zxing.pdf417.PDF417Writer
 import com.google.zxing.datamatrix.DataMatrixWriter
 import com.google.zxing.aztec.AztecWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import com.qring.printer.bt.PrinterConnection
 import com.qring.printer.data.HistoryPayloadHolder
 import com.qring.printer.data.HistoryRepository
@@ -40,12 +43,27 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import timber.log.Timber
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class CodeAlignment(val label: String) {
     LEFT("左对齐"),
     CENTER("居中"),
     RIGHT("右对齐")
 }
+
+/** 二维码纠错等级（仅 QR Code 生效） */
+enum class QrEcc(val label: String, val level: ErrorCorrectionLevel) {
+    L("L 约7%", ErrorCorrectionLevel.L),
+    M("M 约15%", ErrorCorrectionLevel.M),
+    Q("Q 约25%", ErrorCorrectionLevel.Q),
+    H("H 约30%", ErrorCorrectionLevel.H)
+}
+
+/** 占位符：{content} 条码内容；{time_now} 当前时间；{(1:100)} 批量序号 */
+private val SEQ_REGEX = Regex("\\{\\((\\d+):(\\d+)\\)\\}")
 
 data class CodePrintUiState(
     val content: String = "",
@@ -60,6 +78,19 @@ data class CodePrintUiState(
     val scalePercent: Int = 50,
     // 对齐方式
     val alignment: CodeAlignment = CodeAlignment.CENTER,
+    // 二维码纠错等级
+    val ecc: QrEcc = QrEcc.M,
+    // 上方标注
+    val showTopText: Boolean = false,
+    val topText: String = "",
+    // 下方标注
+    val showBottomText: Boolean = false,
+    val bottomText: String = "",
+    // 标注字号
+    val captionFontSize: Float = 14f,
+    // 批量打印数量（默认 1；含 {(start:end)} 占位符时自动取区间长度）
+    val batchCount: Int = 1,
+    val progressText: String = "",
 )
 
 class CodePrintViewModel(application: Application) : AndroidViewModel(application) {
@@ -89,7 +120,16 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
             val codeTypeIndex = obj.optInt("codeTypeIndex", 0)
             _uiState.value = _uiState.value.copy(
                 content = content,
-                codeTypeIndex = codeTypeIndex
+                codeTypeIndex = codeTypeIndex,
+                ecc = QrEcc.entries.getOrElse(obj.optInt("ecc", 1)) { QrEcc.M },
+                scalePercent = obj.optInt("scalePercent", 50).coerceIn(10, 100),
+                alignment = CodeAlignment.entries.getOrElse(obj.optInt("alignment", 1)) { CodeAlignment.CENTER },
+                showTopText = obj.optBoolean("showTopText", false),
+                topText = obj.optString("topText", ""),
+                showBottomText = obj.optBoolean("showBottomText", false),
+                bottomText = obj.optString("bottomText", ""),
+                captionFontSize = obj.optDouble("captionFontSize", 14.0).toFloat().coerceIn(10f, 24f),
+                batchCount = obj.optInt("batchCount", 1).coerceIn(1, 200)
             )
             if (content.isNotEmpty()) {
                 updatePreview()
@@ -113,7 +153,75 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(alignment = alignment)
     }
 
-    /** 快速模板填充 */
+    fun setEcc(ecc: QrEcc) {
+        _uiState.value = _uiState.value.copy(ecc = ecc)
+    }
+
+    fun setShowTopText(show: Boolean) { _uiState.value = _uiState.value.copy(showTopText = show) }
+    fun setTopText(text: String) { _uiState.value = _uiState.value.copy(topText = text) }
+    fun setShowBottomText(show: Boolean) { _uiState.value = _uiState.value.copy(showBottomText = show) }
+    fun setBottomText(text: String) { _uiState.value = _uiState.value.copy(bottomText = text) }
+    fun setCaptionFontSize(size: Float) { _uiState.value = _uiState.value.copy(captionFontSize = size.coerceIn(10f, 24f)) }
+    fun setBatchCount(count: Int) { _uiState.value = _uiState.value.copy(batchCount = count.coerceIn(1, 200)) }
+
+    /** 在输入框中插入变量占位符（图形化编辑入口） */
+    fun insertPlaceholder(placeholder: String) {
+        _uiState.value = _uiState.value.copy(content = _uiState.value.content + placeholder)
+    }
+
+    // ── 占位符解析 ──────────────────────────────────────────
+
+    /** 当前时间文本 */
+    private fun timeNow(): String {
+        return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+    }
+
+    /**
+     * 解析模板占位符：
+     * - {content}   → 条码内容（已含序号替换的结果）
+     * - {time_now}  → 当前时间
+     * - {(start:end)} → 批量序号（第 seq 张，共 total 张，线性映射到 start..end）
+     */
+    private fun resolvePlaceholders(template: String, resolvedContent: String, seq: Int, total: Int): String {
+        var s = template
+        s = s.replace("{content}", resolvedContent)
+        s = s.replace("{time_now}", timeNow())
+        s = SEQ_REGEX.replace(s) { m ->
+            val start = m.groupValues[1].toIntOrNull() ?: 1
+            val end = m.groupValues[2].toIntOrNull() ?: start
+            if (total <= 1) {
+                start.toString()
+            } else {
+                val v = start + Math.round((seq - 1) * (end - start).toFloat() / (total - 1))
+                v.coerceIn(minOf(start, end), maxOf(start, end)).toString()
+            }
+        }
+        return s
+    }
+
+    /** 条码实际内容（解析占位符后的第 seq 张） */
+    fun resolveContentFor(seq: Int, total: Int): String {
+        return resolvePlaceholders(_uiState.value.content, _uiState.value.content, seq, total)
+    }
+
+    /** 检测内容中的批量区间占位符 {(start:end)}，返回区间长度；无则 null */
+    fun seqRangeInContent(): Pair<Int, Int>? {
+        val m = SEQ_REGEX.find(_uiState.value.content) ?: return null
+        val start = m.groupValues[1].toIntOrNull() ?: return null
+        val end = m.groupValues[2].toIntOrNull() ?: return null
+        return start to end
+    }
+
+    /** 有效批量数量：内容含 {(start:end)} 时取区间长度（用户手动设置优先） */
+    fun effectiveBatchCount(): Int {
+        val range = seqRangeInContent() ?: return _uiState.value.batchCount
+        val rangeLen = kotlin.math.abs(range.second - range.first) + 1
+        // 若用户未手动改过（默认 1），自动用区间长度
+        return if (_uiState.value.batchCount <= 1) rangeLen else _uiState.value.batchCount
+    }
+
+    // ── 快速模板 ────────────────────────────────────────────
+
     /** URL 模板 */
     fun applyUrlTemplate(url: String) {
         val finalUrl = url.trim().let { if (it.isEmpty()) "" else it }
@@ -200,6 +308,8 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    // ── 码制与渲染 ──────────────────────────────────────────
+
     /** 码制对应的 ZXing 格式 */
     private fun formatFor(codeTypeIndex: Int): BarcodeFormat {
         val label = com.qring.printer.model.CODE_TYPES.getOrNull(codeTypeIndex)?.label ?: "QR Code"
@@ -222,17 +332,15 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
     private fun isOneD(codeTypeIndex: Int): Boolean =
         com.qring.printer.model.CODE_TYPES.getOrNull(codeTypeIndex)?.category == com.qring.printer.model.CodeCategory.ONE_D
 
-    /**
-     * 把内容渲染成 384 点宽的条码灰度 + 二值，返回 (binary, width, height)。
-     * 码图按 scalePercent 缩放并按 alignment 对齐在 384 宽画布上。
-     * 内容为空返回 null。
-     */
-    private fun renderCode(state: CodePrintUiState): Triple<ByteArray, Int, Int>? {
-        if (state.content.isEmpty()) return null
+    private fun isQr(codeTypeIndex: Int): Boolean =
+        formatFor(codeTypeIndex) == BarcodeFormat.QR_CODE
+
+    /** 生成码图（不含标注），返回 (binary, width, height) */
+    private fun renderCodeFigure(resolvedContent: String, state: CodePrintUiState): Triple<ByteArray, Int, Int>? {
+        if (resolvedContent.isEmpty()) return null
         val format = formatFor(state.codeTypeIndex)
         val size = 384
 
-        // PDF417 需要特殊处理：它不是正方形的，且需要专门的 writer
         if (format == BarcodeFormat.PDF_417) {
             val hints = mapOf(
                 EncodeHintType.MARGIN to 1,
@@ -241,14 +349,12 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                 EncodeHintType.PDF417_DIMENSIONS to com.google.zxing.pdf417.encoder.Dimensions(3, 10, 1, 10)
             )
             val writer = PDF417Writer()
-            // PDF417 用较窄的宽度生成，因为它本身是宽矩形
             val encodeW = 384
             val encodeH = 192
             val bitMatrix: BitMatrix = try {
-                writer.encode(state.content, format, encodeW, encodeH, hints)
+                writer.encode(resolvedContent, format, encodeW, encodeH, hints)
             } catch (e: Exception) {
-                // 退化：用默认尺寸再试
-                writer.encode(state.content, format, size, size, hints)
+                writer.encode(resolvedContent, format, size, size, hints)
             }
             val bw = bitMatrix.width
             val bh = bitMatrix.height
@@ -258,31 +364,24 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                     grayData[y * bw + x] = if (bitMatrix.get(x, y)) 0 else 255
                 }
             }
-            var gray = GrayImage(grayData, bw, bh)
-            // 缩放到目标尺寸
+            val gray = GrayImage(grayData, bw, bh)
             val targetW = (384 * state.scalePercent / 100).coerceAtLeast(38)
             val targetH = (targetW * bh / bw).coerceAtLeast(20)
             val scaled = scaleGrayNearest(gray, targetW, targetH)
             val srcBinary = ditherToBinary(scaled, DitherMode.NONE, 128)
-            // 居中放到 384 宽画布
-            val canvasW = WIDTH_DOTS
-            val canvasH = targetH
-            val canvas = createBinaryCanvas(canvasW, canvasH)
-            val offsetX = when (state.alignment) {
-                CodeAlignment.LEFT -> 0
-                CodeAlignment.CENTER -> ((canvasW - targetW) / 2).coerceAtLeast(0)
-                CodeAlignment.RIGHT -> (canvasW - targetW).coerceAtLeast(0)
-            }
-            blitBinary(canvas, canvasW, canvasH, srcBinary, targetW, targetH, offsetX, 0)
-            return Triple(canvas, canvasW, canvasH)
+            return Triple(srcBinary, targetW, targetH)
         }
 
-        val hints = mapOf(
+        val hints = mutableMapOf<EncodeHintType, Any>(
             EncodeHintType.MARGIN to 2,
             EncodeHintType.CHARACTER_SET to "UTF-8"
         )
+        // 二维码纠错等级（仅 QR Code）
+        if (isQr(state.codeTypeIndex)) {
+            hints[EncodeHintType.ERROR_CORRECTION] = state.ecc.level
+        }
         val bitMatrix: BitMatrix = MultiFormatWriter().encode(
-            state.content, format, size, size, hints
+            resolvedContent, format, size, size, hints
         )
         val grayData = IntArray(size * size)
         for (y in 0 until size) {
@@ -291,35 +390,105 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
         var gray = GrayImage(grayData, size, size)
-        // 一维码压扁
         if (isOneD(state.codeTypeIndex)) {
             gray = squeezeRows(gray, 140)
         }
-        // 根据 scalePercent 计算目标尺寸：10%~100% 对应 38~384 点
-        val maxDim = if (isOneD(state.codeTypeIndex)) 384 else 384
+        val maxDim = 384
         val targetW = (maxDim * state.scalePercent / 100).coerceAtLeast(38)
         val targetH = if (isOneD(state.codeTypeIndex)) {
             (140 * state.scalePercent / 100).coerceAtLeast(20)
         } else {
-            targetW  // 二维码正方形
+            targetW
         }
         val scaled = scaleGrayNearest(gray, targetW, targetH)
-        // 纯阈值，不抖动
         val srcBinary = ditherToBinary(scaled, DitherMode.NONE, 128)
-        // 按 alignment 放到 384 宽画布上
+        return Triple(srcBinary, targetW, targetH)
+    }
+
+    /**
+     * 渲染单张条码（含标注文字），返回 384 宽画布 (binary, w, h)。
+     * seq/total 用于占位符序号替换。
+     */
+    private fun renderCode(state: CodePrintUiState, seq: Int, total: Int): Triple<ByteArray, Int, Int>? {
+        val resolvedContent = resolvePlaceholders(state.content, state.content, seq, total)
+        if (resolvedContent.isEmpty()) return null
+        val figure = renderCodeFigure(resolvedContent, state) ?: return null
+        val (codeBinary, codeW, codeH) = figure
+
+        val topLine = if (state.showTopText) resolvePlaceholders(state.topText, resolvedContent, seq, total) else ""
+        val bottomLine = if (state.showBottomText) resolvePlaceholders(state.bottomText, resolvedContent, seq, total) else ""
+
+        val hasTop = topLine.isNotEmpty()
+        val hasBottom = bottomLine.isNotEmpty()
+
+        // 标注文字高度：字号 + 上下留白
+        val capFont = state.captionFontSize
+        val topH = if (hasTop) (capFont + 8f).toInt() else 0
+        val bottomH = if (hasBottom) (capFont + 8f).toInt() else 0
+
         val canvasW = WIDTH_DOTS
-        val canvasH = targetH
+        val canvasH = topH + codeH + bottomH
         val canvas = createBinaryCanvas(canvasW, canvasH)
+
+        // 码图按 alignment 水平偏移
         val offsetX = when (state.alignment) {
             CodeAlignment.LEFT -> 0
-            CodeAlignment.CENTER -> ((canvasW - targetW) / 2).coerceAtLeast(0)
-            CodeAlignment.RIGHT -> (canvasW - targetW).coerceAtLeast(0)
+            CodeAlignment.CENTER -> ((canvasW - codeW) / 2).coerceAtLeast(0)
+            CodeAlignment.RIGHT -> (canvasW - codeW).coerceAtLeast(0)
         }
-        blitBinary(canvas, canvasW, canvasH, srcBinary, targetW, targetH, offsetX, 0)
+        blitBinary(canvas, canvasW, canvasH, codeBinary, codeW, codeH, offsetX, topH)
+
+        // 标注文字：转成位图再 blit（与码图同一二值体系）
+        if (hasTop) {
+            val textBmp = renderCaptionBitmap(topLine, capFont, canvasW)
+            val tg = bitmapToGrayRaw(textBmp)
+            textBmp.recycle()
+            val tb = ditherToBinary(tg, DitherMode.NONE, 211)
+            blitBinary(canvas, canvasW, canvasH, tb, tg.width, tg.height, 0, 0)
+        }
+        if (hasBottom) {
+            val textBmp = renderCaptionBitmap(bottomLine, capFont, canvasW)
+            val tg = bitmapToGrayRaw(textBmp)
+            textBmp.recycle()
+            val tb = ditherToBinary(tg, DitherMode.NONE, 211)
+            blitBinary(canvas, canvasW, canvasH, tb, tg.width, tg.height, 0, topH + codeH)
+        }
+
         return Triple(canvas, canvasW, canvasH)
     }
 
-    /** 实时预览：内容/码制变化时调用 */
+    /** 渲染标注文字位图（居中，白底黑字） */
+    private fun renderCaptionBitmap(text: String, fontSize: Float, width: Int): Bitmap {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.textSize = fontSize
+            color = Color.BLACK
+            textAlign = Paint.Align.CENTER
+            typeface = android.graphics.Typeface.DEFAULT
+        }
+        val fm = paint.fontMetrics
+        val textH = (fm.descent - fm.ascent)
+        val height = Math.round(textH + 4f)
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        // 超宽截断（标注一般不超宽，超了截断处理）
+        var display = text
+        while (paint.measureText(display) > width - 4 && display.length > 1) {
+            display = display.substring(0, display.length - 1)
+        }
+        if (display != text) {
+            display = display.substring(0, display.length - 1) + "…"
+        }
+        val baseline = (height - (fm.ascent + fm.descent)) / 2f
+        canvas.drawText(display, width / 2f, baseline, paint)
+        return bmp
+    }
+
+    private fun bitmapToGrayRaw(bmp: Bitmap): GrayImage {
+        return com.qring.printer.protocol.bitmapToGrayRaw(bmp)
+    }
+
+    /** 实时预览：渲染第 1 张 */
     fun updatePreview() {
         val state = _uiState.value
         if (state.content.isEmpty()) {
@@ -334,12 +503,11 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val old = _uiState.value.previewBitmap
                 val preview = withContext(Dispatchers.Default) {
-                    val result = renderCode(_uiState.value) ?: return@withContext null
+                    val result = renderCode(_uiState.value, 1, 1) ?: return@withContext null
                     val (binary, w, h) = result
                     binaryToPreviewBitmap(binary, w, h, false)
                 } ?: return@launch
                 _uiState.value = _uiState.value.copy(previewBitmap = preview)
-                // 等当前帧画完旧位图再回收
                 old?.let { if (it != preview) { delay(150); it.recycle() } }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -368,13 +536,13 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
-        _uiState.value = _uiState.value.copy(printing = true, resultMessage = "")
+        val total = effectiveBatchCount()
+        _uiState.value = _uiState.value.copy(printing = true, resultMessage = "", progressText = "")
 
         viewModelScope.launch {
             var fullBmp: Bitmap? = null
             var thumbBmp: Bitmap? = null
             try {
-                // 打印前体检
                 val fault = withContext(Dispatchers.IO) {
                     printerConnection.preflightCheck()
                 }
@@ -387,44 +555,68 @@ class CodePrintViewModel(application: Application) : AndroidViewModel(applicatio
                     return@launch
                 }
 
-                // 重新生成并打印
                 val result = withContext(Dispatchers.Default) {
-                    val r = renderCode(_uiState.value) ?: return@withContext null
-                    val (binary, w, h) = r
-                    val raster = packBinaryToRaster(binary, w, h)
+                    var lastOk = false
+                    var lastMsg = ""
+                    for (seq in 1..total) {
+                        _uiState.value = _uiState.value.copy(
+                            progressText = "正在打印第 $seq/$total 张…"
+                        )
+                        val r = renderCode(_uiState.value, seq, total) ?: continue
+                        val (binary, w, h) = r
+                        val raster = packBinaryToRaster(binary, w, h)
 
-                    // 生成缩略图
-                    fullBmp = binaryToPreviewBitmap(binary, w, h, false)
-                    thumbBmp = Bitmap.createScaledBitmap(fullBmp!!, 200, Math.round(200f * fullBmp!!.height / fullBmp!!.width), true)
+                        if (fullBmp == null) {
+                            fullBmp = binaryToPreviewBitmap(binary, w, h, false)
+                            thumbBmp = Bitmap.createScaledBitmap(
+                                fullBmp!!, 200, Math.round(200f * fullBmp!!.height / fullBmp!!.width), true
+                            )
+                        }
 
-                    val printResult = withContext(Dispatchers.IO) {
-                        printerConnection.printRaster(raster, 1)
+                        val printResult = withContext(Dispatchers.IO) {
+                            printerConnection.printRaster(raster, 1)
+                        }
+                        lastOk = printResult.ok
+                        lastMsg = printResult.message
+                        if (!printResult.ok) break
                     }
 
-                    // 打印成功后保存历史
-                    if (printResult.ok) {
+                    // 全部成功保存历史
+                    if (lastOk) {
                         try {
-                            val payload = org.json.JSONObject().apply {
+                            val payload = JSONObject().apply {
                                 put("content", _uiState.value.content)
                                 put("codeTypeIndex", _uiState.value.codeTypeIndex)
+                                put("ecc", _uiState.value.ecc.ordinal)
+                                put("scalePercent", _uiState.value.scalePercent)
+                                put("alignment", _uiState.value.alignment.ordinal)
+                                put("showTopText", _uiState.value.showTopText)
+                                put("topText", _uiState.value.topText)
+                                put("showBottomText", _uiState.value.showBottomText)
+                                put("bottomText", _uiState.value.bottomText)
+                                put("captionFontSize", _uiState.value.captionFontSize.toDouble())
+                                put("batchCount", _uiState.value.batchCount)
                             }.toString()
                             historyRepo.saveHistory(HIST_TYPE_CODE, thumbBmp!!, payload)
-                        } catch (e: Exception) { }
+                        } catch (e: Exception) {
+                            Timber.tag("CodeVM").w(e, "saveHistory failed")
+                        }
                     }
-
-                    printResult
+                    com.qring.printer.bt.PrintResult(lastOk, if (lastOk) "打印完成，共 $total 张" else lastMsg)
                 }
 
                 _uiState.value = _uiState.value.copy(
                     printing = false,
-                    resultOk = result?.ok ?: false,
-                    resultMessage = result?.message ?: "请输入条码内容"
+                    resultOk = result.ok,
+                    resultMessage = result.message,
+                    progressText = ""
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     printing = false,
                     resultOk = false,
-                    resultMessage = "打印失败：${e.message}"
+                    resultMessage = "打印失败：${e.message}",
+                    progressText = ""
                 )
             } finally {
                 try { fullBmp?.recycle() } catch (e: Exception) { }

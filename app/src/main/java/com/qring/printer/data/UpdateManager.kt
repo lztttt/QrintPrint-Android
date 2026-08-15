@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import timber.log.Timber
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -32,13 +33,16 @@ class UpdateManager(private val app: Application) {
         val GITHUB_OWNER = "lztttt"
         val GITHUB_REPO = "QrintPrint-Android"
         val CURRENT_VERSION = com.qring.printer.BuildConfig.VERSION_NAME
+        // 国内下载服务器（HTTP，无 SSL）—— 优先下载源
+        val CHINA_DOWNLOAD_BASE = "http://47.95.211.196:8083"
     }
 
     data class UpdateInfo(
         val version: String,         // 新版本号，如 "1.0.1"
         val releaseNotes: String,    // 更新说明
-        val downloadUrl: String,     // APK 下载地址
+        val downloadUrl: String,     // APK 下载地址（优先：国内服务器）
         val downloadSize: Long,      // APK 大小（字节）
+        val githubDownloadUrl: String, // GitHub 备选下载地址
         val htmlUrl: String,         // Release 页面 URL
         val publishedAt: String = ""  // 发布时间
     )
@@ -106,7 +110,18 @@ class UpdateManager(private val app: Application) {
                 updateDir.listFiles()?.forEach { it.delete() }
                 val apk = File(updateDir, "qringprint-${info.version}.apk")
 
-                downloadApk(info.downloadUrl, apk, info.downloadSize)
+                // 优先国内服务器；失败（服务器不可用/文件缺失）时回退 GitHub
+                try {
+                    // 国内服务器可能无 Content-Length 或文件与 GitHub 不一致，不校验大小
+                    downloadApk(info.downloadUrl, apk, 0)
+                } catch (e1: Exception) {
+                    Timber.tag("UpdateManager").w(e1, "china download failed, fallback to github")
+                    if (info.githubDownloadUrl.isNotEmpty()) {
+                        downloadApk(info.githubDownloadUrl, apk, info.downloadSize)
+                    } else {
+                        throw e1
+                    }
+                }
                 apk
             }
 
@@ -210,7 +225,8 @@ class UpdateManager(private val app: Application) {
      * 解析 GitHub Release JSON，提取 APK 资源。
      */
     private fun parseRelease(json: JSONObject): UpdateInfo? {
-        val tagName = json.optString("tag_name", "").removePrefix("v")  // v1.0.1 → 1.0.1
+        val rawTag = json.optString("tag_name", "")  // 原样保留：v1.4.0（用于拼下载 URL，服务器文件名带 v 前缀）
+        val tagName = rawTag.removePrefix("v")  // v1.0.1 → 1.0.1（用于版本比较）
         val body = json.optString("body", "暂无更新说明")
         val htmlUrl = json.optString("html_url", "")
 
@@ -220,13 +236,17 @@ class UpdateManager(private val app: Application) {
             val asset = assets.getJSONObject(i)
             val name = asset.optString("name", "")
             if (name.endsWith(".apk", ignoreCase = true)) {
-                val downloadUrl = asset.optString("browser_download_url", "")
+                val githubUrl = asset.optString("browser_download_url", "")
                 val size = asset.optLong("size", 0)
+                // 优先从国内服务器下载（HTTP），GitHub 作为备选
+                // 服务器文件名带 v 前缀：QringPrint-v1.4.0.apk，必须用 rawTag 拼接
+                val chinaUrl = "$CHINA_DOWNLOAD_BASE/QringPrint-$rawTag.apk"
                 return UpdateInfo(
                     version = tagName,
                     releaseNotes = body,
-                    downloadUrl = downloadUrl,
+                    downloadUrl = chinaUrl,
                     downloadSize = size,
+                    githubDownloadUrl = githubUrl,
                     htmlUrl = htmlUrl,
                     publishedAt = json.optString("published_at", "")
                 )

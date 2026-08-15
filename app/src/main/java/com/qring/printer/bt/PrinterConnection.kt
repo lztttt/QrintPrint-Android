@@ -203,9 +203,20 @@ class PrinterConnection private constructor() {
 
             PrinterStatusRepository.update { it.copy(connState = ConnState.CONNECTED) }
 
+            // 复位打印机残留状态：断连可能中断在打印半途（ENABLE 已发/光栅未完成），
+            // 打印机内部还处于「使能/接收光栅」状态，直接把新光栅接上去会导致图像错位。
+            // 先发 STOP + ENABLE 序列强制退出残留状态，再清空输入缓冲。
+            try {
+                sendAll(listOf(CMD_STOP, CMD_ENABLE, CMD_ENABLE2))
+                delay(100)
+            } catch (e: Exception) {
+                Timber.tag(TAG_CONN).w(e, "reset sequence failed")
+            }
+            synchronized(rxBuffer) { rxBuffer.clear() }
+
             persistDeviceId(address)
-            refreshAll()
-            queryDeviceInfo()
+            refreshAllLocked()
+            queryDeviceInfoLocked()
             if (foreground) startPolling()
 
             true
@@ -330,7 +341,9 @@ class PrinterConnection private constructor() {
                 os.write(data, offset, end - offset)
                 os.flush()
                 offset = end
-                delay(CHUNK_DELAY_MS)
+                // SPP 链路自带流控（写满阻塞背压），无需人工延时；
+                // 保持 0 连续写，避免固件把停顿误判为数据结束
+                if (CHUNK_DELAY_MS > 0) delay(CHUNK_DELAY_MS)
             }
             true
         } catch (e: IOException) {
@@ -423,7 +436,12 @@ class PrinterConnection private constructor() {
         return sb.toString().trim()
     }
 
-    suspend fun queryDeviceInfo() {
+    /** 查询设备信息（带锁，避免与打印并发写 socket） */
+    suspend fun queryDeviceInfo() = mutex.withLock {
+        queryDeviceInfoLocked()
+    }
+
+    private suspend fun queryDeviceInfoLocked() {
         if (busy) return
         val model = queryString(CMD_MODEL)
         val firmware = queryString(CMD_FW_VERSION)
@@ -446,7 +464,16 @@ class PrinterConnection private constructor() {
         }
     }
 
-    suspend fun refreshAll() {
+    /**
+     * 刷新状态（带锁）。
+     * 与打印共用同一把 mutex：打印期间轮询会排队等待，避免查询命令
+     * 插入光栅数据流导致固件误解析（图片断层/错位的根因之一）。
+     */
+    suspend fun refreshAll() = mutex.withLock {
+        refreshAllLocked()
+    }
+
+    private suspend fun refreshAllLocked() {
         val status = queryStatus()
         if (status != null) {
             PrinterStatusRepository.applyStatus(status)
@@ -458,13 +485,13 @@ class PrinterConnection private constructor() {
     }
 
     /**
-     * 打印前体检。返回故障文案，null 表示可以打印。
+     * 打印前体检（带锁）。返回故障文案，null 表示可以打印。
      */
-    suspend fun preflightCheck(): String? {
-        if (!isAlive()) return "打印机未连接"
-        val status = queryStatus() ?: return null
+    suspend fun preflightCheck(): String? = mutex.withLock {
+        if (!isAlive()) return@withLock "打印机未连接"
+        val status = queryStatus() ?: return@withLock null
         PrinterStatusRepository.applyStatus(status)
-        return faultMessage(status)
+        faultMessage(status)
     }
 
     // ── 打印 ──────────────────────────────────────────────────
@@ -510,18 +537,87 @@ class PrinterConnection private constructor() {
             PrinterStatusRepository.update { it.copy(printing = false) }
             if (!result.ok) {
                 PrinterStatusRepository.update { it.copy(lastError = result.message) }
+                // 超时/失败后尝试停止打印机：打印机可能仍在处理残留数据，
+                // 发 STOP 强制退出，避免残留状态影响下一次打印
+                try {
+                    sendAll(listOf(CMD_STOP))
+                } catch (e: Exception) {
+                    Timber.tag(TAG_CONN).w(e, "stop after ack failure failed")
+                }
             }
             result
         } finally {
             busy = false
             withContext(NonCancellable) {
-                refreshAll()
+                // 已在 mutex 内，用无锁内部版避免死锁
+                refreshAllLocked()
             }
             if (foreground && isAlive()) startPolling()
         }
     }
 
     // ── 状态轮询 ──────────────────────────────────────────────
+
+    /**
+     * 连续打印多块光栅（块间不走纸，拼接成完整内容）。
+     * 用于横排长内容：旋转后宽度超过 384 点时，按 384 宽分块，
+     * 一次性发送所有块（GS v 0 连续命令即上下拼接），最后统一走纸/等 ACK。
+     */
+    suspend fun printRasterChunks(chunks: List<RasterData>, thickness: Int?): PrintResult = mutex.withLock {
+        if (!isAlive()) return PrintResult(false, "打印机未连接")
+        if (busy) return PrintResult(false, "上一个打印任务还没结束")
+        if (chunks.isEmpty()) return PrintResult(false, "没有可打印的数据")
+
+        busy = true
+        stopPolling()
+        synchronized(rxBuffer) { rxBuffer.clear() }
+
+        try {
+            if (!sendAll(listOf(CMD_ENABLE, CMD_ENABLE2))) {
+                return PrintResult(false, "发送失败，连接可能已断开")
+            }
+            if (thickness != null) {
+                send(cmdThickness(thickness))
+            }
+            send(CMD_WAKEUP)
+            sendAll(cmdFeed(FEED_BEFORE))
+
+            for (chunk in chunks) {
+                send(cmdRasterHeader(chunk.widthBytes, chunk.height, 0))
+                if (!send(chunk.data)) {
+                    return PrintResult(false, "位图发送中断")
+                }
+            }
+
+            sendAll(cmdFeed(FEED_AFTER))
+            send(CMD_STOP)
+
+            PrinterStatusRepository.update { it.copy(printing = true) }
+            val totalHeight = chunks.sumOf { it.height }
+            val ackTimeout = minOf(
+                ACK_TIMEOUT_MAX_MS,
+                ACK_TIMEOUT_BASE_MS + totalHeight * ACK_TIMEOUT_PER_ROW_MS
+            )
+            Timber.tag(TAG_CONN).d("printRasterChunks: chunks=${chunks.size}, totalHeight=$totalHeight, ackTimeout=${ackTimeout}ms")
+            val result = waitAck(ackTimeout)
+            PrinterStatusRepository.update { it.copy(printing = false) }
+            if (!result.ok) {
+                PrinterStatusRepository.update { it.copy(lastError = result.message) }
+                try {
+                    sendAll(listOf(CMD_STOP))
+                } catch (e: Exception) {
+                    Timber.tag(TAG_CONN).w(e, "stop after ack failure failed")
+                }
+            }
+            result
+        } finally {
+            busy = false
+            withContext(NonCancellable) {
+                refreshAllLocked()
+            }
+            if (foreground && isAlive()) startPolling()
+        }
+    }
 
     private fun startPolling() {
         stopPolling()

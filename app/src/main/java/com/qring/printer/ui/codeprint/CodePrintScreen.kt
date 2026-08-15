@@ -39,6 +39,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -134,6 +135,14 @@ fun CodePrintScreen(
                 enabled = !uiState.printing
             )
 
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 变量占位符快捷插入（图形化编辑）
+            VariableInsertBar(
+                onInsert = viewModel::insertPlaceholder,
+                enabled = !uiState.printing
+            )
+
             Spacer(modifier = Modifier.height(12.dp))
 
             // 码制选择
@@ -145,12 +154,48 @@ fun CodePrintScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            // 纠错等级（仅二维码显示）
+            if ((CODE_TYPES.getOrNull(uiState.codeTypeIndex)?.label ?: "QR Code") == "QR Code") {
+                EccSelector(
+                    ecc = uiState.ecc,
+                    onEccChange = viewModel::setEcc,
+                    enabled = !uiState.printing
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
             // 尺寸与对齐
             CodeSizeAndAlignment(
                 scalePercent = uiState.scalePercent,
                 alignment = uiState.alignment,
                 onScaleChange = viewModel::setScalePercent,
                 onAlignmentChange = viewModel::setAlignment,
+                enabled = !uiState.printing
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 上下方标注
+            CaptionSettings(
+                showTopText = uiState.showTopText,
+                topText = uiState.topText,
+                showBottomText = uiState.showBottomText,
+                bottomText = uiState.bottomText,
+                captionFontSize = uiState.captionFontSize,
+                onShowTopChange = viewModel::setShowTopText,
+                onTopTextChange = viewModel::setTopText,
+                onShowBottomChange = viewModel::setShowBottomText,
+                onBottomTextChange = viewModel::setBottomText,
+                onFontSizeChange = viewModel::setCaptionFontSize,
+                enabled = !uiState.printing
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 批量打印
+            BatchSettings(
+                batchCount = uiState.batchCount,
+                onBatchCountChange = viewModel::setBatchCount,
                 enabled = !uiState.printing
             )
 
@@ -178,6 +223,7 @@ fun CodePrintScreen(
         BottomActionBar(
             printing = uiState.printing,
             canPrint = uiState.content.isNotEmpty(),
+            progressText = uiState.progressText,
             resultMessage = uiState.resultMessage,
             resultOk = uiState.resultOk,
             onPrint = viewModel::print
@@ -434,6 +480,252 @@ private fun CodeSizeAndAlignment(
     }
 }
 
+// ── 变量占位符插入 ────────────────────────────────────────
+
+@Composable
+private fun VariableInsertBar(
+    onInsert: (String) -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surfaceSunken),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Text(
+                text = "插入变量（追加到内容末尾，打印时自动替换）",
+                fontSize = 11.sp,
+                color = QringPalette.textSecondary
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                VariableChip("{content}", "条码内容", Modifier.weight(1f), enabled) { onInsert("{content}") }
+                VariableChip("{time_now}", "当前时间", Modifier.weight(1f), enabled) { onInsert("{time_now}") }
+                VariableChip("{(1:100)}", "序号 1-100", Modifier.weight(1f), enabled) { onInsert("{(1:100)}") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VariableChip(
+    label: String,
+    hint: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(QringPalette.surface)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(text = label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = QringPalette.brand)
+            Text(text = hint, fontSize = 9.sp, color = QringPalette.textSecondary)
+        }
+    }
+}
+
+// ── 二维码纠错等级 ────────────────────────────────────────
+
+@Composable
+private fun EccSelector(
+    ecc: com.qring.printer.ui.codeprint.QrEcc,
+    onEccChange: (com.qring.printer.ui.codeprint.QrEcc) -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "二维码纠错等级",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = QringPalette.textPrimary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "等级越高容错越强，但码点越密（适合贴面/磨损场景）",
+                fontSize = 11.sp,
+                color = QringPalette.textSecondary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                com.qring.printer.ui.codeprint.QrEcc.entries.forEach { option ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(32.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (ecc == option) QringPalette.brand else QringPalette.surfaceSunken)
+                            .clickable(enabled = enabled) { onEccChange(option) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = option.label,
+                            fontSize = 11.sp,
+                            fontWeight = if (ecc == option) FontWeight.Bold else FontWeight.Normal,
+                            color = if (ecc == option) Color.White else QringPalette.textPrimary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── 上下方标注 ────────────────────────────────────────────
+
+@Composable
+private fun CaptionSettings(
+    showTopText: Boolean,
+    topText: String,
+    showBottomText: Boolean,
+    bottomText: String,
+    captionFontSize: Float,
+    onShowTopChange: (Boolean) -> Unit,
+    onTopTextChange: (String) -> Unit,
+    onShowBottomChange: (Boolean) -> Unit,
+    onBottomTextChange: (String) -> Unit,
+    onFontSizeChange: (Float) -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "文字标注",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = QringPalette.textPrimary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "支持 {content} {time_now} {(1:100)} 变量，如「SN：{content}」",
+                fontSize = 11.sp,
+                color = QringPalette.textSecondary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 上方标注
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("上方文字", fontSize = 13.sp, color = QringPalette.textPrimary, modifier = Modifier.weight(1f))
+                Switch(checked = showTopText, onCheckedChange = onShowTopChange, enabled = enabled)
+            }
+            if (showTopText) {
+                OutlinedTextField(
+                    value = topText,
+                    onValueChange = onTopTextChange,
+                    enabled = enabled,
+                    label = { Text("如：SN：{content}") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 14.sp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 下方标注
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("下方文字", fontSize = 13.sp, color = QringPalette.textPrimary, modifier = Modifier.weight(1f))
+                Switch(checked = showBottomText, onCheckedChange = onShowBottomChange, enabled = enabled)
+            }
+            if (showBottomText) {
+                OutlinedTextField(
+                    value = bottomText,
+                    onValueChange = onBottomTextChange,
+                    enabled = enabled,
+                    label = { Text("如：ISBN：{content}") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 14.sp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 标注字号
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text("标注字号", fontSize = 13.sp, color = QringPalette.textPrimary, modifier = Modifier.weight(1f))
+                Text("${captionFontSize.toInt()}pt", fontSize = 13.sp, color = QringPalette.brand)
+            }
+            Slider(
+                value = captionFontSize,
+                onValueChange = onFontSizeChange,
+                valueRange = 10f..24f,
+                enabled = enabled,
+                colors = SliderDefaults.colors(thumbColor = QringPalette.brand, activeTrackColor = QringPalette.brand)
+            )
+        }
+    }
+}
+
+// ── 批量打印 ──────────────────────────────────────────────
+
+@Composable
+private fun BatchSettings(
+    batchCount: Int,
+    onBatchCountChange: (Int) -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = QringPalette.surface),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "批量打印",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = QringPalette.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("$batchCount 张", fontSize = 13.sp, color = QringPalette.brand)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "内容含 {(start:end)} 时自动按区间数量批量，序号逐张递增；否则按下方数量打印相同内容",
+                fontSize = 11.sp,
+                color = QringPalette.textSecondary
+            )
+            Slider(
+                value = batchCount.toFloat(),
+                onValueChange = { onBatchCountChange(Math.round(it)) },
+                valueRange = 1f..200f,
+                steps = 198,
+                enabled = enabled,
+                colors = SliderDefaults.colors(thumbColor = QringPalette.brand, activeTrackColor = QringPalette.brand)
+            )
+        }
+    }
+}
+
 @Composable
 private fun AlignChip(
     label: String,
@@ -487,6 +779,7 @@ private fun CodeTypeChip(
 private fun BottomActionBar(
     printing: Boolean,
     canPrint: Boolean,
+    progressText: String,
     resultMessage: String,
     resultOk: Boolean,
     onPrint: () -> Unit
@@ -498,6 +791,14 @@ private fun BottomActionBar(
             .padding(horizontal = Metrics.PAGE_PADDING.dp)
             .padding(top = 10.dp, bottom = 16.dp)
     ) {
+        if (progressText.isNotEmpty()) {
+            Text(
+                text = progressText,
+                fontSize = 12.sp,
+                color = QringPalette.textSecondary,
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+        }
         if (resultMessage.isNotEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),

@@ -269,15 +269,60 @@ class WordbookViewModel(application: Application) : AndroidViewModel(application
         return repo.loadWords(bookId, state.currentProgress, state.wordCount)
     }
 
-    /** 单个单词块占用的行高（点）。高度预估与实际绘制共用，避免两者不一致导致内容被裁 */
+    /** 释义/短语可用的绘制宽度（缩进 12 点） */
+    private fun cnUsable(state: WordbookUiState): Float {
+        val margin = state.leftMargin
+        return WIDTH_DOTS - (margin + 12f) - margin
+    }
+
+    /** 与绘制循环完全一致的释义 Paint（字号 0.8 倍、同字体），保证换行行数一致 */
+    private fun cnPaintFor(state: WordbookUiState): Paint {
+        val family = state.fontFamilies.getOrElse(state.fontFamilyIndex) { "sans-serif" }
+        return Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = state.fontSize * 0.8f
+            color = android.graphics.Color.BLACK
+            typeface = FontList.typefaceFor(family, false, false)
+            textAlign = Paint.Align.LEFT
+        }
+    }
+
+    /** 按可用宽度换行（中英文混排按字符折行），保证长内容全部显示不被截断 */
+    private fun wrapTextToLines(text: String, paint: Paint, maxWidth: Float): List<String> {
+        if (text.isEmpty()) return listOf("")
+        if (paint.measureText(text) <= maxWidth) return listOf(text)
+        val lines = mutableListOf<String>()
+        val cur = StringBuilder()
+        for (ch in text) {
+            if (cur.isNotEmpty() && paint.measureText(cur.toString() + ch) > maxWidth) {
+                lines.add(cur.toString())
+                cur.setLength(0)
+            }
+            cur.append(ch)
+        }
+        if (cur.isNotEmpty()) lines.add(cur.toString())
+        return lines
+    }
+
+    /** 单个单词块占用的行高（点）。高度预估与实际绘制共用同一换行算法，
+     *  保证字号/行距/字体变化后排版一致，长释义不会被裁 */
     private fun wordBlockHeight(state: WordbookUiState, word: VocabWord): Float {
         val lineH = state.fontSize + state.lineSpacing
+        val cnPaint = cnPaintFor(state)
+        val cnW = cnUsable(state)
         var h = lineH // 单词行
-        // 释义行（默写模式画空行，普通模式画中文释义，二选一）
-        h += if (state.hideMode || state.showChinese) lineH else 0f
-        // 短语行（最多 2 行，每行 0.8 倍行高）
+        if (state.hideMode) {
+            h += lineH // 默写线占一行
+        } else if (state.showChinese) {
+            // 释义全部显示：行数 = 按可用宽度换行后的行数
+            val translations = word.translations.joinToString("；") { it.second }
+            h += wrapTextToLines(translations, cnPaint, cnW).size * lineH
+        }
+        // 短语（每行 0.8 倍行高，超宽同样换行）
         if (state.showPhrases && !state.hideMode) {
-            h += minOf(2, word.phrases.size) * lineH * 0.8f
+            for (phrase in word.phrases.take(2)) {
+                val txt = "  ${phrase.first} ${phrase.second}"
+                h += wrapTextToLines(txt, cnPaint, cnW).size * lineH * 0.8f
+            }
         }
         h += lineH * 0.5f // 词间分隔空隙
         return h
@@ -410,25 +455,22 @@ class WordbookViewModel(application: Application) : AndroidViewModel(application
                 canvas.drawLine(margin, underlineY, width - margin, underlineY, linePaint)
                 y += lineH
             } else if (state.showChinese) {
-                // 中文释义（按缩进后的可用宽度截断，避免右缘溢出）
+                // 中文释义：全部显示，超宽自动换行，不截断
                 val translations = word.translations.joinToString("；") { it.second }
-                if (cnPaint.measureText(translations) > cnUsable) {
-                    canvas.drawText(truncateText(translations, cnPaint, cnUsable), cnLeft, y, cnPaint)
-                } else {
-                    canvas.drawText(translations, cnLeft, y, cnPaint)
+                for (line in wrapTextToLines(translations, cnPaint, cnUsable)) {
+                    canvas.drawText(line, cnLeft, y, cnPaint)
+                    y += lineH
                 }
-                y += lineH
             }
 
-            // 短语
+            // 短语（全部显示，超宽同样换行）
             if (state.showPhrases && !state.hideMode) {
                 for (phrase in word.phrases.take(2)) {
                     val phraseText = "  ${phrase.first} ${phrase.second}"
-                    val txt = if (cnPaint.measureText(phraseText) > cnUsable) {
-                        truncateText(phraseText, cnPaint, cnUsable)
-                    } else phraseText
-                    canvas.drawText(txt, cnLeft, y, cnPaint)
-                    y += lineH * 0.8f
+                    for (line in wrapTextToLines(phraseText, cnPaint, cnUsable)) {
+                        canvas.drawText(line, cnLeft, y, cnPaint)
+                        y += lineH * 0.8f
+                    }
                 }
             }
 

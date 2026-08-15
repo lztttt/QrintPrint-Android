@@ -39,9 +39,11 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -60,6 +62,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -135,7 +139,8 @@ fun TextPrintScreen(
             margin = uiState.pageMargin,
             landscape = uiState.landscape,
             overflow = uiState.landscapeOverflow,
-            alignment = uiState.alignment
+            alignment = uiState.alignment,
+            printWidth = if (uiState.landscapeTargetWidth > 0) uiState.landscapeTargetWidth else (uiState.previewBitmap?.height ?: 0)
         )
 
         // 中间：输入 + 打印设置（可滚动）
@@ -158,6 +163,7 @@ fun TextPrintScreen(
                 onFontFamilyChange = viewModel::setFontFamilyIndex,
                 onThicknessChange = viewModel::setThickness,
                 onLandscapeChange = viewModel::setLandscape,
+                onLandscapeWidthChange = viewModel::setLandscapeTargetWidth,
                 onAlignmentChange = viewModel::setAlignment,
                 onImportFont = { fontPickerLauncher.launch(arrayOf("font/ttf", "font/otf", "application/octet-stream", "*/*")) },
                 onDeleteFont = viewModel::deleteImportedFont,
@@ -195,6 +201,7 @@ private fun InputAndSettings(
     onFontFamilyChange: (Int) -> Unit,
     onThicknessChange: (Int?) -> Unit,
     onLandscapeChange: (Boolean) -> Unit,
+    onLandscapeWidthChange: (Int) -> Unit,
     onAlignmentChange: (TextAlignment) -> Unit,
     onImportFont: () -> Unit = {},
     onDeleteFont: (String) -> Unit = {},
@@ -213,11 +220,12 @@ private fun InputAndSettings(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 文本输入
+            // 文本输入（横排时单行横向滚动编辑）
             TextInputArea(
                 text = uiState.text,
                 onTextChange = onTextChange,
-                enabled = !uiState.printing
+                enabled = !uiState.printing,
+                horizontalScrollEnabled = uiState.landscape
             )
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -364,6 +372,60 @@ private fun InputAndSettings(
                         }
                     }
 
+                    // 横排打印宽度（仅横排显示）：按实际打印宽度（点）设置，可手动输入
+                    if (uiState.landscape) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("打印宽度", modifier = Modifier.weight(1f), fontSize = 13.sp, color = QringPalette.textPrimary)
+                            if (uiState.landscapeTargetWidth > 0) {
+                                Text(
+                                    "${uiState.landscapeTargetWidth} 点(${String.format("%.1f", uiState.landscapeTargetWidth / 8.0)}mm)",
+                                    fontSize = 13.sp, color = QringPalette.brand
+                                )
+                            } else {
+                                val autoW = uiState.previewBitmap?.height ?: 0
+                                Text(
+                                    if (autoW > 0) "自适应 ${autoW} 点(${String.format("%.1f", autoW / 8.0)}mm)"
+                                    else "自适应原尺寸",
+                                    fontSize = 12.sp, color = QringPalette.brand
+                                )
+                            }
+                        }
+                        Text(
+                            text = "设置横排实际打印宽度（超 384 点自动分段）；0 或自适应 = 原尺寸",
+                            fontSize = 10.sp,
+                            color = QringPalette.textSecondary
+                        )
+                        Slider(
+                            value = (if (uiState.landscapeTargetWidth > 0) uiState.landscapeTargetWidth else 384).toFloat(),
+                            onValueChange = { onLandscapeWidthChange(Math.round(it).toInt()) },
+                            valueRange = 100f..1200f,
+                            steps = 21,
+                            enabled = !uiState.printing,
+                            colors = SliderDefaults.colors(thumbColor = QringPalette.brand, activeTrackColor = QringPalette.brand)
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = if (uiState.landscapeTargetWidth > 0) uiState.landscapeTargetWidth.toString() else "",
+                                onValueChange = { v ->
+                                    val n = v.filter { it.isDigit() }.toIntOrNull() ?: 0
+                                    onLandscapeWidthChange(n)
+                                },
+                                label = { Text("宽度(点)，0=自适应") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                enabled = !uiState.printing,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                textStyle = TextStyle(fontSize = 14.sp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            TextButton(
+                                onClick = { onLandscapeWidthChange(0) },
+                                enabled = !uiState.printing
+                            ) { Text("自适应", fontSize = 12.sp, color = QringPalette.brand) }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(8.dp))
 
                     // 对齐方式
@@ -477,7 +539,8 @@ private fun PreviewCard(
     margin: Float,
     landscape: Boolean = false,
     overflow: Boolean = false,
-    alignment: TextAlignment = TextAlignment.LEFT
+    alignment: TextAlignment = TextAlignment.LEFT,
+    printWidth: Int = 0
 ) {
     Card(
         modifier = Modifier
@@ -495,7 +558,7 @@ private fun PreviewCard(
             Text(
                 text = if (preview != null)
                     if (landscape)
-                        "横排 宽 ${preview.width} 点(${String.format("%.1f", preview.width / 8.0)}mm) × 高 ${preview.height} 点(${String.format("%.1f", preview.height / 8.0)}mm) · ${alignment.label}"
+                        "横排打印宽 ${preview.width} 点(${String.format("%.1f", preview.width / 8.0)}mm) · 上下滚动查看 · ${alignment.label}"
                     else
                         "宽 384 点(${String.format("%.1f", 384 / 8.0)}mm) × 高 ${preview.height} 点(${String.format("%.1f", preview.height / 8.0)}mm) · ${alignment.label}"
                 else if (text.isEmpty())
@@ -513,7 +576,7 @@ private fun PreviewCard(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    text = "⚠ 文字高度超过 384 点，横排打印会被截断！请减小字号或行距",
+                    text = "横排内容较长：将自动分段打印（每段 384 点宽），完整输出不会漏内容",
                     modifier = Modifier.padding(8.dp),
                     color = Color(0xFFFF4D4F),
                     fontSize = 11.sp
@@ -536,23 +599,44 @@ private fun PreviewCard(
 
             when {
                 preview != null -> {
-                    // 横排和竖排都不旋转预览位图，文字正着显示
-                    // preview 尺寸为 384×H
-                    val contentH = (preview.height * scale)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(200.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Image(
-                            bitmap = preview.asImageBitmap(),
-                            contentDescription = "打印预览",
+                    if (landscape) {
+                        // 横排：文字正着显示（不旋转），按打印宽度等比缩放（字符不变形）。
+                        // 渲染图 W×H；宽度映射到画布宽，高度按比例 → 等比，不拉伸。
+                        val previewW = preview.width.coerceAtLeast(1)
+                        val dispH = preview.height.toFloat() * (canvasWidthDp / previewW)
+                        Box(
                             modifier = Modifier
-                                .width(canvasWidthDp.dp)
-                                .height(contentH.dp),
-                            contentScale = ContentScale.FillBounds
-                        )
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Image(
+                                bitmap = preview.asImageBitmap(),
+                                contentDescription = "横排打印预览",
+                                modifier = Modifier
+                                    .width(canvasWidthDp.dp)
+                                    .height(dispH.dp),
+                                contentScale = ContentScale.FillBounds
+                            )
+                        }
+                    } else {
+                        // 竖排：文字正着显示，垂直滚动（preview 尺寸 384×H）
+                        val contentH = (preview.height * scale)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Image(
+                                bitmap = preview.asImageBitmap(),
+                                contentDescription = "打印预览",
+                                modifier = Modifier
+                                    .width(canvasWidthDp.dp)
+                                    .height(contentH.dp),
+                                contentScale = ContentScale.FillBounds
+                            )
+                        }
                     }
                 }
                 text.isEmpty() -> {
@@ -613,7 +697,8 @@ private fun ConnectionBanner(printerStatus: com.qring.printer.model.PrinterStatu
 private fun TextInputArea(
 text: String,
 onTextChange: (String) -> Unit,
-enabled: Boolean
+enabled: Boolean,
+horizontalScrollEnabled: Boolean = false
 ) {
 val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
 Card(
@@ -628,10 +713,10 @@ BasicTextField(
 value = text,
 onValueChange = onTextChange,
 enabled = enabled,
-modifier = Modifier
-.fillMaxSize()
-.padding(12.dp)
-.padding(end = 40.dp),
+        modifier = Modifier
+        .fillMaxSize()
+        .padding(12.dp)
+        .padding(end = 40.dp),
 textStyle = TextStyle(
 fontSize = 16.sp,
 color = QringPalette.textPrimary
