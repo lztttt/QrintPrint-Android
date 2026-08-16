@@ -1,4 +1,4 @@
-﻿*.apk
+*.apk
 *.aab
 *.ap_
 *.dex
@@ -51,3 +51,8 @@ foreground.png
 # Misc
 .cxx/
 .externalNativeBuild/
+
+# Local build dirs
+.gradle_home/
+.tmp/
+.home/
